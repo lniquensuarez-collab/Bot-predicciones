@@ -317,12 +317,14 @@ with tab1:
                     equipo["P(≥1 roja) %"] = [(1 - math.exp(-m)) * 100 for m in (rh, ra, rh + ra)]
 
                 st.dataframe(equipo.round(2).fillna("-"), use_container_width=True)
-               for nombre, probs in tot_tablas.items():
-    st.dataframe(pd.DataFrame(probs, index=[nombre]).style.format("{:.1f}%", na_rep="-"), use_container_width=True)
+                
+                for nombre, probs in tot_tablas.items():
+                    st.dataframe(pd.DataFrame(probs, index=[nombre]).style.format("{:.1f}%", na_rep="-"), use_container_width=True)
+                
                 with st.expander("📋 Líneas por equipo"):
-    for nombre, tabla in eq_tablas.items():
-        st.write(f"**{nombre}**")
-        st.dataframe(tabla.style.format("{:.1f}%", na_rep="-"), use_container_width=True)
+                    for nombre, tabla in eq_tablas.items():
+                        st.write(f"**{nombre}**")
+                        st.dataframe(tabla.style.format("{:.1f}%", na_rep="-"), use_container_width=True)
 
 # --------------------------------- RANKING ------------------------------------
 with tab2:
