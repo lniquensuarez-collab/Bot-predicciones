@@ -138,3 +138,15 @@ def ingestar_ligas(con, nombres, extra_temporadas=0, anios_xlsx=3, progreso=None
     n = db.guardar_partidos(con, filas)
     db.registrar_ingesta(con, "football-data.co.uk", ", ".join(cfg_n for cfg_n in nombres), n)
     return n, avisos
+
+def obtener_equipos_vigentes(con, competicion):
+    """Obtiene la lista de equipos activos en la temporada más reciente para la interfaz."""
+    query = """
+        SELECT DISTINCT local AS equipo 
+        FROM partidos 
+        WHERE competicion = ? AND temporada = (
+            SELECT MAX(temporada) FROM partidos WHERE competicion = ?
+        )
+    """
+    df = pd.read_sql_query(query, con, params=(competicion, competicion))
+    return sorted(df['equipo'].tolist())

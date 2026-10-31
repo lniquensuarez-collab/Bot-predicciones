@@ -47,17 +47,6 @@ def preparar_liga(codigo, half_life):
     return {"df": df, "feats": feats, "estado": est, "dc": dc, "lr": lr}
 
 
-def equipos_activos(df):
-    """Equipos de la temporada vigente (si hay pocos, suma los de los últimos 120 días)."""
-    ultima = df["Season"].iloc[-1]
-    sub = df[df["Season"] == ultima]
-    eqs = set(sub["HomeTeam"]) | set(sub["AwayTeam"])
-    if len(eqs) < 16:
-        rec = df[df["Date"] >= df["Date"].max() - pd.Timedelta(days=120)]
-        eqs |= set(rec["HomeTeam"]) | set(rec["AwayTeam"])
-    return sorted(eqs)
-
-
 def esperados(est_h, est_a, home, away, favor, contra, dh, ch, da, ca):
     """Conteo esperado de local y visita (EWMA propio + lo que el rival suele provocar); si falta, media de liga."""
     eh, ea = ft.esperado_conteo_cruzado(est_h, est_a, home, away, favor, contra)
@@ -145,10 +134,13 @@ with tab1:
         st.stop()
     cross = cruzado and lig_h != lig_a
 
+    with db.sesion() as con:
+        eq_h = data_bot.obtener_equipos_vigentes(con, LIGAS[lig_h]["codigo"])
+        eq_a = data_bot.obtener_equipos_vigentes(con, LIGAS[lig_a]["codigo"])
+
     c1, c2 = st.columns(2)
-    home = c1.selectbox("🏠 Local:", equipos_activos(P_h["df"]), index=0)
-    eq_a = equipos_activos(P_a["df"])
-    away = c2.selectbox("✈️ Visita:", eq_a, index=min(1, len(eq_a) - 1))
+    home = c1.selectbox("🏠 Local:", eq_h, index=0)
+    away = c2.selectbox("✈️ Visita:", eq_a, index=min(1, len(eq_a) - 1) if eq_a else 0)
     fecha = pd.Timestamp(st.date_input("📅 Fecha del partido", value=date.today()))
 
     with st.expander("🎛️ Escenario (ajustes manuales)"):
@@ -338,7 +330,8 @@ with tab2:
         st.info("Esta liga no tiene datos suficientes. Ve a **🗄️ Datos**.")
     else:
         est = P_main["estado"]
-        eqs = equipos_activos(P_main["df"])
+        with db.sesion() as con:
+            eqs = data_bot.obtener_equipos_vigentes(con, LIGAS[liga_principal]["codigo"])
         rk = pd.DataFrame({"Equipo": eqs, "Elo": [round(est.elo.rating(t)) for t in eqs],
                            "Partidos": [est.n.get(t, 0) for t in eqs],
                            "Forma (últ. 5, pts)": [sum(est.pts.get(t, [])[-5:]) for t in eqs]})
