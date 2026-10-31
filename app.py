@@ -291,10 +291,10 @@ with tab1:
                     equipo["Faltas"] = [fh, fa, fh + fa]
                     r_tot = md.dispersion_nb(dh["HF"] + dh["AF"])
                     r_eq = md.dispersion_nb(pd.concat([dh["HF"], dh["AF"]]))
-                    tot_tablas["Faltas totales"] = {f"Over {l} %": v * 100 for l, v in
+                    tot_tablas["Faltas totales"] = {f"Over {l} ": v * 100 for l, v in
                                                     md.prob_over_nb(fh + fa, r_tot, [20.5, 22.5, 24.5, 26.5]).items()}
                     eq_tablas["Faltas"] = pd.DataFrame(
-                        {f"Over {l} %": [md.prob_over_nb(m, r_eq, [l])[l] * 100 for m in (fh, fa)]
+                        {f"Over {l}": [md.prob_over_nb(m, r_eq, [l])[l] * 100 for m in (fh, fa)]
                          for l in [10.5, 12.5, 14.5]}, index=[home[:18], away[:18]])
 
                 if disp["tarjetas"]:
@@ -302,10 +302,10 @@ with tab1:
                     equipo["Amarillas"] = [yh, ya, yh + ya]
                     r_tot = md.dispersion_nb(dh["HY"] + dh["AY"])
                     r_eq = md.dispersion_nb(pd.concat([dh["HY"], dh["AY"]]))
-                    tot_tablas["Amarillas totales"] = {f"Over {l} %": v * 100 for l, v in
+                    tot_tablas["Amarillas totales"] = {f"Over {l}": v * 100 for l, v in
                                                        md.prob_over_nb(yh + ya, r_tot, [2.5, 3.5, 4.5, 5.5]).items()}
                     eq_tablas["Amarillas"] = pd.DataFrame(
-                        {f"Over {l} %": [md.prob_over_nb(m, r_eq, [l])[l] * 100 for m in (yh, ya)]
+                        {f"Over {l}": [md.prob_over_nb(m, r_eq, [l])[l] * 100 for m in (yh, ya)]
                          for l in [0.5, 1.5, 2.5, 3.5]}, index=[home[:18], away[:18]])
 
                 if disp["tarjetas"] and disp["rojas"]:
@@ -317,12 +317,12 @@ with tab1:
                     equipo["P(≥1 roja) %"] = [(1 - math.exp(-m)) * 100 for m in (rh, ra, rh + ra)]
 
                 st.dataframe(equipo.round(2).fillna("-"), use_container_width=True)
-                for nombre, probs in tot_tablas.items():
-                    st.dataframe(lineas(pd.DataFrame(probs, index=[nombre])), use_container_width=True)
+               for nombre, probs in tot_tablas.items():
+    st.dataframe(pd.DataFrame(probs, index=[nombre]).style.format("{:.1f}%", na_rep="-"), use_container_width=True)
                 with st.expander("📋 Líneas por equipo"):
-                    for nombre, tabla in eq_tablas.items():
-                        st.write(f"**{nombre}**")
-                        st.dataframe(lineas(tabla), use_container_width=True)
+    for nombre, tabla in eq_tablas.items():
+        st.write(f"**{nombre}**")
+        st.dataframe(tabla.style.format("{:.1f}%", na_rep="-"), use_container_width=True)
 
 # --------------------------------- RANKING ------------------------------------
 with tab2:
