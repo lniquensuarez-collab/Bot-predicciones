@@ -223,7 +223,7 @@ with tab1:
         # Cada tasa combina el ataque de uno y la defensa del otro
         sigma_lam = sigma * math.sqrt((f_h**2 + f_a**2) / 2.0)
         sigma_mu  = sigma * math.sqrt((f_a**2 + f_h**2) / 2.0)
-rng = np.random.default_rng(0)
+        rng = np.random.default_rng(0)
         s_1x2, s_o25 = [], []
         for _ in range(500):
             pert_lam = lam * math.exp(rng.normal(0, sigma_lam))
@@ -231,7 +231,7 @@ rng = np.random.default_rng(0)
             Ms = md.matriz(pert_lam, pert_mu, rho)
             s_1x2.append(md.probs_1x2(Ms))
             s_o25.append(md.mercados_goles(Ms)["Over 2.5"])
-        
+
         s_1x2 = np.array(s_1x2)
         lo, hi = np.percentile(s_1x2, 10, axis=0), np.percentile(s_1x2, 90, axis=0)
 
