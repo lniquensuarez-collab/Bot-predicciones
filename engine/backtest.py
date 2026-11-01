@@ -33,19 +33,30 @@ def correr_backtest(df, feats, half_life, w_dc, n_test, bloque_dias=21, progreso
     ids = np.unique(bloque_id[ini:])
     P_dc, P_lr, P_base, idxs = [], [], [], []
 
-    for k, b in enumerate(ids):
+for k, b in enumerate(ids):
         te = np.where(bloque_id == b)[0]
         te = te[te >= ini]
         corte = te[0]
-        dc = ajustar_dc(df.iloc[:corte], df["Date"].iloc[corte], half_life)
+        
+        fecha_ref = df["Date"].iloc[corte]
+        dc = ajustar_dc(df.iloc[:corte], fecha_ref, half_life)
         tr = np.where(ok_train[:corte])[0]
-        lr = entrenar_lr(feats.iloc[tr][FEATS], y_all[tr])
+        
+        # Recalcular el decaimiento relativo al día del corte del backtest
+        dias = (fecha_ref - df["Date"].iloc[tr]).dt.days.to_numpy(float).clip(min=0)
+        w = np.exp(-np.log(2) / half_life * dias)
+        
+        lr = entrenar_lr(feats.iloc[tr][FEATS], y_all[tr], sample_weight=w)
+        
         for i in te:
             lam, mu = tasas_dc(dc, df["HomeTeam"].iloc[i], df["AwayTeam"].iloc[i])
             P_dc.append(probs_1x2(matriz(lam, mu, dc["rho"])))
         P_lr.append(predecir_lr(lr, feats.iloc[te][FEATS]))
         P_base.extend([np.bincount(y_all[:corte], minlength=3) / corte] * len(te))
         idxs.extend(te)
+        if progreso:
+            progreso((k + 1) / len(ids))
+        
         if progreso:
             progreso((k + 1) / len(ids))
 

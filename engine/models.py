@@ -130,22 +130,25 @@ def top_marcadores(M, n=5):
 
 
 # ------------------------ Clasificador y conteos -----------------------------
-def entrenar_lr(X, y):
-    return make_pipeline(StandardScaler(), LogisticRegression(C=0.3, max_iter=1000)).fit(X, y)
-
+def entrenar_lr(X, y, sample_weight=None):
+    return make_pipeline(StandardScaler(), LogisticRegression(C=0.3, max_iter=1000)).fit(X, y, logisticregression__sample_weight=sample_weight)
 
 def predecir_lr(pipe, X):
     out = np.zeros((len(X), 3))
     out[:, pipe.classes_] = pipe.predict_proba(X)
     return out
 
-
 def entrenar_produccion(df, feats, half_life):
-    dc = ajustar_dc(df, df["Date"].max() + pd.Timedelta(days=1), half_life)
+    fecha_ref = df["Date"].max() + pd.Timedelta(days=1)
+    dc = ajustar_dc(df, fecha_ref, half_life)
     y = df["FTR"].map(ETIQ).to_numpy()
     ok = (feats["n_prev"] >= 5).to_numpy()
-    return dc, entrenar_lr(feats.loc[ok, FEATS], y[ok])
-
+    
+    # Decaimiento exponencial idéntico a Dixon-Coles
+    dias = (fecha_ref - df.loc[ok, "Date"]).dt.days.to_numpy(float).clip(min=0)
+    w = np.exp(-np.log(2) / half_life * dias)
+    
+    return dc, entrenar_lr(feats.loc[ok, FEATS], y[ok], sample_weight=w)
 
 def dispersion_nb(total):
     s = total.dropna()
