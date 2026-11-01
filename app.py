@@ -451,14 +451,17 @@ with tab3:
 
 #Mejora Visual Opcional en el Subheader de la App
 st.subheader(f"{home} vs {away}")
+        st.subheader(f"{home} vs {away}")
         if basico:
-            st.caption("Esta liga no incluye estadísticas de córners, tiros, faltas ni tarjetas en los datos: "
-                       "se muestran solo la probabilidad de ganador y los goles.")
+            st.caption(f"Liga sin stats detalladas (solo 1X2 y goles) | {n_h} PJ vs {n_a} PJ")
         else:
-            nota_incert = f" (incertidumbre alta: {n_h if n_h < 15 else n_a} PJ)" if min(n_h, n_a) < 15 else ""
+            nota_incert = f" ⚠️ (incertidumbre alta: {n_h if n_h < 15 else n_a} PJ)" if min(n_h, n_a) < 15 else ""
             st.caption(f"Elo interno: {est_h.elo.rating(home):.0f} ({n_h} PJ) vs {est_a.elo.rating(away):.0f} ({n_a} PJ)"
                        + (" · cancha neutral" if neutral else "") + f" · Modelo: {usado}{nota_incert}")
-
+                       
+        if cross:
+            st.warning("Partido entre ligas: el resultado depende del supuesto de fuerza relativa de cada liga "
+                       "(ver el panel ⚖️). No hay datos propios para validarlo.")
 # -------------------------------- METODOLOGÍA ---------------------------------
 with tab5:
     st.markdown(f"""
