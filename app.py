@@ -239,41 +239,41 @@ with tab1:
                 col.progress(float(p_fin[i]))
 
         # ---- Goles (todas las ligas) ----
-        st.markdown("#### ⚽ Goles")
-        g1, g2, g3 = st.columns(3)
-        g1.metric(home[:14], f"{lam:.2f}")
-        g2.metric(away[:14], f"{mu:.2f}")
-        g3.metric("Total esperado", f"{lam + mu:.2f}")
-        mk = md.mercados_goles(M)
+            st.markdown("#### ⚽ Goles")
+            g1, g2, g3 = st.columns(3)
+            g1.metric(home[:14], f"{lam:.2f}")
+            g2.metric(away[:14], f"{mu:.2f}")
+            g3.metric("Total esperado", f"{lam + mu:.2f}")
+            mk = md.mercados_goles(M)
 
-        if basico:
-            solo_goles = ["Over 1.5", "Under 1.5", "Over 2.5", "Under 2.5", "Over 3.5", "Under 3.5"]
-            st.dataframe(pd.DataFrame({"Probabilidad %": {k: mk[k] * 100 for k in solo_goles}}).round(1),
-                         use_container_width=True)
-        else:
-            comp = pd.DataFrame({"Local %": [p_elo[0], p_dc[0], p_lr[0]], "Empate %": [p_elo[1], p_dc[1], p_lr[1]],
-                                 "Visita %": [p_elo[2], p_dc[2], p_lr[2]]},
-                                index=["Solo Elo", "Dixon-Coles", "Clasificador"]) * 100
-            if min(o_h, o_d, o_a) > 1:
-                inv = 1 / np.array([o_h, o_d, o_a])
-                comp.loc["Mercado (sin margen)"] = inv / inv.sum() * 100
-                comp.loc["Diferencia vs mercado (pp)"] = p_fin * 100 - inv / inv.sum() * 100
-            st.markdown("#### 📊 Comparación de modelos")
-            st.dataframe(comp.round(1).fillna("-"), use_container_width=True)
+            if basico:
+                solo_goles = ["Over 1.5", "Under 1.5", "Over 2.5", "Under 2.5", "Over 3.5", "Under 3.5"]
+                st.dataframe(pd.DataFrame({"Probabilidad %": {k: mk[k] * 100 for k in solo_goles}}).round(1),
+                             use_container_width=True)
+            else:
+                comp = pd.DataFrame({"Local %": [p_elo[0], p_dc[0], p_lr[0]], "Empate %": [p_elo[1], p_dc[1], p_lr[1]],
+                                     "Visita %": [p_elo[2], p_dc[2], p_lr[2]]},
+                                    index=["Solo Elo", "Dixon-Coles", "Clasificador"]) * 100
+                if min(o_h, o_d, o_a) > 1:
+                    inv = 1 / np.array([o_h, o_d, o_a])
+                    comp.loc["Mercado (sin margen)"] = inv / inv.sum() * 100
+                    comp.loc["Diferencia vs mercado (pp)"] = p_fin * 100 - inv / inv.sum() * 100
+                st.markdown("#### 📊 Comparación de modelos")
+                st.dataframe(comp.round(1).fillna("-"), use_container_width=True)
 
-            st.dataframe(pd.DataFrame({"Probabilidad %": {k: v * 100 for k, v in mk.items()}}).round(1),
-                         use_container_width=True)
-            st.caption(f"Over 2.5: {np.median(s_o25) * 100:.1f}% "
-                       f"(rango {np.percentile(s_o25, 10) * 100:.0f}–{np.percentile(s_o25, 90) * 100:.0f}%)")
-            doble = {"1X (local o empate)": p_fin[0] + p_fin[1], "X2 (visita o empate)": p_fin[1] + p_fin[2],
-                     "12 (sin empate)": p_fin[0] + p_fin[2]}
-            st.dataframe(pd.DataFrame({"Probabilidad %": {k: v * 100 for k, v in doble.items()}}).round(1),
-                         use_container_width=True)
+                st.dataframe(pd.DataFrame({"Probabilidad %": {k: v * 100 for k, v in mk.items()}}).round(1),
+                             use_container_width=True)
+                st.caption(f"Over 2.5: {np.median(s_o25) * 100:.1f}% "
+                           f"(rango {np.percentile(s_o25, 10) * 100:.0f}–{np.percentile(s_o25, 90) * 100:.0f}%)")
+                doble = {"1X (local o empate)": p_fin[0] + p_fin[1], "X2 (visita o empate)": p_fin[1] + p_fin[2],
+                         "12 (sin empate)": p_fin[0] + p_fin[2]}
+                st.dataframe(pd.DataFrame({"Probabilidad %": {k: v * 100 for k, v in doble.items()}}).round(1),
+                             use_container_width=True)
 
-            st.markdown("#### 🎯 Marcadores más probables")
-            ts = md.top_marcadores(M, 5)
-            for col, (sc, pr) in zip(st.columns(len(ts)), ts):
-                col.metric(sc, f"{pr * 100:.1f}%")
+                st.markdown("#### 🎯 Marcadores más probables")
+                ts = md.top_marcadores(M, 5)
+                for col, (sc, pr) in zip(st.columns(len(ts)), ts):
+                    col.metric(sc, f"{pr * 100:.1f}%")
 
 # ---- Córners y tiros a puerta ----
 # ---- Funciones para aislar varianza (evitan el sesgo de liga) ----
