@@ -235,8 +235,7 @@ with tab1:
         
         s_1x2 = np.array(s_1x2)
         lo, hi = np.percentile(s_1x2, 10, axis=0), np.percentile(s_1x2, 90, axis=0)
-
-        st.subheader(f"{home} vs {away}")
+st.subheader(f"{home} vs {away}")
         if basico:
             st.caption(f"Liga sin stats detalladas (solo 1X2 y goles) | {n_h} PJ vs {n_a} PJ")
         else:
@@ -247,7 +246,6 @@ with tab1:
         if cross:
             st.warning("Partido entre ligas: el resultado depende del supuesto de fuerza relativa de cada liga "
                        "(ver el panel ⚖️). No hay datos propios para validarlo.")
-
         # ---- Ganador (todas las ligas) ----
         for col, nombre, i in zip(st.columns(3), ["Local", "Empate", "Visita"], range(3)):
             col.metric(nombre, f"{p_fin[i] * 100:.1f}%")
