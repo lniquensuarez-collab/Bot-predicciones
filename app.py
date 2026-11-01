@@ -198,22 +198,52 @@ with tab1:
         else:
             p_fin, usado = w_dc * p_dc + (1 - w_dc) * p_lr, "Dixon-Coles + clasificador"
 
+        # --- Incertidumbre adaptativa según historial de partidos ---
+        n_h = est_h.n.get(home, 0)
+        n_a = est_a.n.get(away, 0)
+        
+        # Factor base: 1.0 si tiene ~38 partidos (1 temporada). Máx 2.0x si tiene pocos, mín 0.7x si tiene muchos.
+        N_REF = 38.0
+        f_h = float(np.clip(math.sqrt(N_REF / max(n_h, 5)), 0.7, 2.0))
+        f_a = float(np.clip(math.sqrt(N_REF / max(n_a, 5)), 0.7, 2.0))
+        
+        # Cada tasa combina ataque de uno y defensa del otro
+        sigma_lam = sigma * math.sqrt((f_h**2 + f_a**2) / 2.0)
+        sigma_mu  = sigma * math.sqrt((f_a**2 + f_h**2) / 2.0)
+
+# --- INCERTIDUMBRE ADAPTATIVA (Monte Carlo) ---
+        n_h = est_h.n.get(home, 0)
+        n_a = est_a.n.get(away, 0)
+        
+        # Factor base: 1.0 si tiene ~38 partidos. Máx 2.0x si tiene pocos, mín 0.7x si tiene muchos.
+        N_REF = 38.0
+        f_h = float(np.clip(math.sqrt(N_REF / max(n_h, 5)), 0.7, 2.0))
+        f_a = float(np.clip(math.sqrt(N_REF / max(n_a, 5)), 0.7, 2.0))
+        
+        # Cada tasa combina el ataque de uno y la defensa del otro
+        sigma_lam = sigma * math.sqrt((f_h**2 + f_a**2) / 2.0)
+        sigma_mu  = sigma * math.sqrt((f_a**2 + f_h**2) / 2.0)
+
         rng = np.random.default_rng(0)
         s_1x2, s_o25 = [], []
         for _ in range(500):
-            Ms = md.matriz(lam * math.exp(rng.normal(0, sigma)), mu * math.exp(rng.normal(0, sigma)), rho)
+            pert_lam = lam * math.exp(rng.normal(0, sigma_lam))
+            pert_mu  = mu  * math.exp(rng.normal(0, sigma_mu))
+            Ms = md.matriz(pert_lam, pert_mu, rho)
             s_1x2.append(md.probs_1x2(Ms))
             s_o25.append(md.mercados_goles(Ms)["Over 2.5"])
+        
         s_1x2 = np.array(s_1x2)
         lo, hi = np.percentile(s_1x2, 10, axis=0), np.percentile(s_1x2, 90, axis=0)
 
         st.subheader(f"{home} vs {away}")
         if basico:
-            st.caption("Esta liga no incluye estadísticas de córners, tiros, faltas ni tarjetas en los datos: "
-                       "se muestran solo la probabilidad de ganador y los goles.")
+            st.caption(f"Liga sin stats detalladas (solo 1X2 y goles) | {n_h} PJ vs {n_a} PJ")
         else:
-            st.caption(f"Elo interno: {est_h.elo.rating(home):.0f} vs {est_a.elo.rating(away):.0f}"
-                       + (" · cancha neutral" if neutral else "") + f" · Modelo: {usado}")
+            nota_incert = f" ⚠️ (incertidumbre alta: {n_h if n_h < 15 else n_a} PJ)" if min(n_h, n_a) < 15 else ""
+            st.caption(f"Elo interno: {est_h.elo.rating(home):.0f} ({n_h} PJ) vs {est_a.elo.rating(away):.0f} ({n_a} PJ)"
+                       + (" · cancha neutral" if neutral else "") + f" · Modelo: {usado}{nota_incert}")
+                       
         if cross:
             st.warning("Partido entre ligas: el resultado depende del supuesto de fuerza relativa de cada liga "
                        "(ver el panel ⚖️). No hay datos propios para validarlo.")
@@ -262,6 +292,27 @@ with tab1:
                 col.metric(sc, f"{pr * 100:.1f}%")
 
 # ---- Córners y tiros a puerta ----
+# ---- Funciones para aislar varianza (evitan el sesgo de liga) ----
+            def disp_partido(df_h, df_a, eq_h, eq_a, c_h, c_a):
+                m_h = (df_h["HomeTeam"] == eq_h) | (df_h["AwayTeam"] == eq_h)
+                m_a = (df_a["HomeTeam"] == eq_a) | (df_a["AwayTeam"] == eq_a)
+                tot = pd.concat([df_h.loc[m_h, c_h] + df_h.loc[m_h, c_a], 
+                                 df_a.loc[m_a, c_h] + df_a.loc[m_a, c_a]]).dropna()
+                if len(tot) >= 15:
+                    mu, var = tot.mean(), tot.var()
+                    return mu * mu / (var - mu) if var > mu else 1e6
+                return md.dispersion_nb(df_h[c_h] + df_h[c_a]) * 1.5
+
+            def disp_equipo(df_t, eq_t, c_h, c_a):
+                m = (df_t["HomeTeam"] == eq_t) | (df_t["AwayTeam"] == eq_t)
+                s = np.where(df_t.loc[m, "HomeTeam"] == eq_t, df_t.loc[m, c_h], df_t.loc[m, c_a])
+                tot = pd.Series(s).dropna()
+                if len(tot) >= 10:
+                    mu, var = tot.mean(), tot.var()
+                    return mu * mu / (var - mu) if var > mu else 1e6
+                return md.dispersion_nb(pd.concat([df_t[c_h], df_t[c_a]])) * 1.5
+
+            # ---- Córners y tiros a puerta ----
             filas = []
             for etiqueta, clave, favor, contra, ch, ca, lns in (
                 ("Córners", "corners", "C", "CA", "HC", "AC", [8.5, 9.5, 10.5, 11.5]),
@@ -270,26 +321,24 @@ with tab1:
                 if not disp[clave]:
                     continue
                 eh, ea = esperados(est_h, est_a, home, away, favor, contra, dh, ch, da, ca)
-                po = md.prob_over_nb(eh + ea, md.dispersion_nb(dh[ch] + dh[ca]), lns)
-                fila = {"Mercado": etiqueta, "Esp. local": eh, "Esp. visita": ea, "Total": eh + ea}
                 
-                # Aquí quitamos el "%" del encabezado
+                # Usar varianza filtrada solo para estos equipos
+                r_tot = disp_partido(dh, da, home, away, ch, ca)
+                po = md.prob_over_nb(eh + ea, r_tot, lns)
+                
+                fila = {"Mercado": etiqueta, "Esp. local": eh, "Esp. visita": ea, "Total": eh + ea}
                 fila.update({f"Over {l}": v * 100 for l, v in po.items()}) 
                 filas.append(fila)
                 
             if filas:
                 st.markdown("#### 🚩 Córners y 🎯 tiros a puerta")
                 st.caption("Mercados muy ruidosos: úsalos como orientación, no como señal fuerte.")
-                
                 df_ct = pd.DataFrame(filas).set_index("Mercado")
-                
-                # Asignar "%" solo a las columnas Over, y dejar las esperadas como números simples
                 formato_ct = {col: "{:.1f}%" for col in df_ct.columns if "Over" in col}
                 formato_ct.update({"Esp. local": "{:.1f}", "Esp. visita": "{:.1f}", "Total": "{:.1f}"})
-                
                 st.dataframe(df_ct.style.format(formato_ct, na_rep="-"), use_container_width=True)
 
-            # ---- Faltas y tarjetas por equipo (solo si la liga trae esas estadísticas) ----
+            # ---- Faltas y tarjetas por equipo ----
             if disp["faltas"] or disp["tarjetas"]:
                 st.markdown("#### 🟨 Faltas y tarjetas por equipo")
                 st.caption("Orientativo: el árbitro influye mucho en las tarjetas y este modelo no lo conoce.")
@@ -299,25 +348,32 @@ with tab1:
                 if disp["faltas"]:
                     fh, fa = esperados(est_h, est_a, home, away, "F", "FA", dh, "HF", da, "AF")
                     equipo["Faltas"] = [fh, fa, fh + fa]
-                    r_tot = md.dispersion_nb(dh["HF"] + dh["AF"])
-                    r_eq = md.dispersion_nb(pd.concat([dh["HF"], dh["AF"]]))
+                    
+                    r_tot = disp_partido(dh, da, home, away, "HF", "AF")
+                    r_eq_h = disp_equipo(dh, home, "HF", "AF")
+                    r_eq_a = disp_equipo(da, away, "HF", "AF")
+                    
                     tot_tablas["Faltas totales"] = {f"Over {l} ": v * 100 for l, v in
                                                     md.prob_over_nb(fh + fa, r_tot, [20.5, 22.5, 24.5, 26.5]).items()}
                     eq_tablas["Faltas"] = pd.DataFrame(
-                        {f"Over {l}": [md.prob_over_nb(m, r_eq, [l])[l] * 100 for m in (fh, fa)]
+                        {f"Over {l}": [md.prob_over_nb(fh, r_eq_h, [l])[l] * 100,
+                                       md.prob_over_nb(fa, r_eq_a, [l])[l] * 100]
                          for l in [10.5, 12.5, 14.5]}, index=[home[:18], away[:18]])
 
                 if disp["tarjetas"]:
                     yh, ya = esperados(est_h, est_a, home, away, "Y", "YA", dh, "HY", da, "AY")
                     equipo["Amarillas"] = [yh, ya, yh + ya]
-                    r_tot = md.dispersion_nb(dh["HY"] + dh["AY"])
-                    r_eq = md.dispersion_nb(pd.concat([dh["HY"], dh["AY"]]))
+                    
+                    r_tot = disp_partido(dh, da, home, away, "HY", "AY")
+                    r_eq_h = disp_equipo(dh, home, "HY", "AY")
+                    r_eq_a = disp_equipo(da, away, "HY", "AY")
+                    
                     tot_tablas["Amarillas totales"] = {f"Over {l}": v * 100 for l, v in
                                                        md.prob_over_nb(yh + ya, r_tot, [2.5, 3.5, 4.5, 5.5]).items()}
                     eq_tablas["Amarillas"] = pd.DataFrame(
-                        {f"Over {l}": [md.prob_over_nb(m, r_eq, [l])[l] * 100 for m in (yh, ya)]
+                        {f"Over {l}": [md.prob_over_nb(yh, r_eq_h, [l])[l] * 100,
+                                       md.prob_over_nb(ya, r_eq_a, [l])[l] * 100]
                          for l in [0.5, 1.5, 2.5, 3.5]}, index=[home[:18], away[:18]])
-
                 if disp["tarjetas"] and disp["rojas"]:
                     rh, ra = esperados(est_h, est_a, home, away, "R", "RA", dh, "HR", da, "AR")
                     # Las rojas son raras: se suaviza 50 % hacia la media de la liga para no sobreajustar
@@ -392,6 +448,16 @@ with tab3:
             st.markdown("#### Curva de calibración (Ensemble)")
             st.line_chart(cal.set_index("Predicho")[["Observado", "Ideal"]])
             st.dataframe(cal[["Predicho", "Observado", "N"]].round(3), use_container_width=True)
+
+#Mejora Visual Opcional en el Subheader de la App
+st.subheader(f"{home} vs {away}")
+        if basico:
+            st.caption("Esta liga no incluye estadísticas de córners, tiros, faltas ni tarjetas en los datos: "
+                       "se muestran solo la probabilidad de ganador y los goles.")
+        else:
+            nota_incert = f" (incertidumbre alta: {n_h if n_h < 15 else n_a} PJ)" if min(n_h, n_a) < 15 else ""
+            st.caption(f"Elo interno: {est_h.elo.rating(home):.0f} ({n_h} PJ) vs {est_a.elo.rating(away):.0f} ({n_a} PJ)"
+                       + (" · cancha neutral" if neutral else "") + f" · Modelo: {usado}{nota_incert}")
 
 # -------------------------------- METODOLOGÍA ---------------------------------
 with tab5:

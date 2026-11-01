@@ -140,13 +140,18 @@ def ingestar_ligas(con, nombres, extra_temporadas=0, anios_xlsx=3, progreso=None
     return n, avisos
 
 def obtener_equipos_vigentes(con, competicion):
-    """Obtiene la lista de equipos activos en la temporada más reciente para la interfaz."""
+    """Obtiene todos los equipos (locales y visitantes) de la temporada más reciente por fecha."""
     query = """
-        SELECT DISTINCT local AS equipo 
-        FROM partidos 
-        WHERE competicion = ? AND temporada = (
-            SELECT MAX(temporada) FROM partidos WHERE competicion = ?
+        WITH ult_temp AS (
+            SELECT temporada FROM partidos 
+            WHERE competicion = ? 
+            ORDER BY fecha DESC LIMIT 1
         )
+        SELECT DISTINCT local AS equipo FROM partidos 
+        WHERE competicion = ? AND temporada = (SELECT temporada FROM ult_temp)
+        UNION
+        SELECT DISTINCT visita AS equipo FROM partidos 
+        WHERE competicion = ? AND temporada = (SELECT temporada FROM ult_temp)
     """
-    df = pd.read_sql_query(query, con, params=(competicion, competicion))
-    return sorted(df['equipo'].tolist())
+    df = pd.read_sql_query(query, con, params=(competicion, competicion, competicion))
+    return sorted(df["equipo"].tolist())
