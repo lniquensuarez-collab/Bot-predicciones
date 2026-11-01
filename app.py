@@ -243,7 +243,7 @@ with tab1:
             nota_incert = f" ⚠️ (incertidumbre alta: {n_h if n_h < 15 else n_a} PJ)" if min(n_h, n_a) < 15 else ""
             st.caption(f"Elo interno: {est_h.elo.rating(home):.0f} ({n_h} PJ) vs {est_a.elo.rating(away):.0f} ({n_a} PJ)"
                        + (" · cancha neutral" if neutral else "") + f" · Modelo: {usado}{nota_incert}")
-                       
+
         if cross:
             st.warning("Partido entre ligas: el resultado depende del supuesto de fuerza relativa de cada liga "
                        "(ver el panel ⚖️). No hay datos propios para validarlo.")
