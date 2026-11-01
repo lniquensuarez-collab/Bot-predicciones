@@ -261,7 +261,7 @@ with tab1:
             for col, (sc, pr) in zip(st.columns(len(ts)), ts):
                 col.metric(sc, f"{pr * 100:.1f}%")
 
-            # ---- Córners y tiros a puerta ----
+# ---- Córners y tiros a puerta ----
             filas = []
             for etiqueta, clave, favor, contra, ch, ca, lns in (
                 ("Córners", "corners", "C", "CA", "HC", "AC", [8.5, 9.5, 10.5, 11.5]),
@@ -272,12 +272,22 @@ with tab1:
                 eh, ea = esperados(est_h, est_a, home, away, favor, contra, dh, ch, da, ca)
                 po = md.prob_over_nb(eh + ea, md.dispersion_nb(dh[ch] + dh[ca]), lns)
                 fila = {"Mercado": etiqueta, "Esp. local": eh, "Esp. visita": ea, "Total": eh + ea}
-                fila.update({f"Over {l} %": v * 100 for l, v in po.items()})
+                
+                # Aquí quitamos el "%" del encabezado
+                fila.update({f"Over {l}": v * 100 for l, v in po.items()}) 
                 filas.append(fila)
+                
             if filas:
                 st.markdown("#### 🚩 Córners y 🎯 tiros a puerta")
                 st.caption("Mercados muy ruidosos: úsalos como orientación, no como señal fuerte.")
-                st.dataframe(lineas(pd.DataFrame(filas).set_index("Mercado")), use_container_width=True)
+                
+                df_ct = pd.DataFrame(filas).set_index("Mercado")
+                
+                # Asignar "%" solo a las columnas Over, y dejar las esperadas como números simples
+                formato_ct = {col: "{:.1f}%" for col in df_ct.columns if "Over" in col}
+                formato_ct.update({"Esp. local": "{:.1f}", "Esp. visita": "{:.1f}", "Total": "{:.1f}"})
+                
+                st.dataframe(df_ct.style.format(formato_ct, na_rep="-"), use_container_width=True)
 
             # ---- Faltas y tarjetas por equipo (solo si la liga trae esas estadísticas) ----
             if disp["faltas"] or disp["tarjetas"]:
