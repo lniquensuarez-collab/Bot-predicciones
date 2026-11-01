@@ -231,11 +231,12 @@ with tab1:
             if cross:
                 st.warning("Partido entre ligas: el resultado depende del supuesto de fuerza relativa de cada liga "
                            "(ver el panel ⚖️). No hay datos propios para validarlo.")
-        # ---- Ganador (todas las ligas) ----
-        for col, nombre, i in zip(st.columns(3), ["Local", "Empate", "Visita"], range(3)):
-            col.metric(nombre, f"{p_fin[i] * 100:.1f}%")
-            col.caption(f"rango {lo[i] * 100:.0f}–{hi[i] * 100:.0f}%")
-            col.progress(float(p_fin[i]))
+
+            # ---- Ganador (todas las ligas) ----
+            for col, nombre, i in zip(st.columns(3), ["Local", "Empate", "Visita"], range(3)):
+                col.metric(nombre, f"{p_fin[i] * 100:.1f}%")
+                col.caption(f"rango {lo[i] * 100:.0f}–{hi[i] * 100:.0f}%")
+                col.progress(float(p_fin[i]))
 
         # ---- Goles (todas las ligas) ----
         st.markdown("#### ⚽ Goles")
