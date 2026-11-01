@@ -380,4 +380,73 @@ with tab2:
         st.info("Esta liga no tiene datos suficientes. Ve a **🗄️ Datos**.")
     else:
         est = P_main["estado"]
-        with
+        with db.sesion() as con:
+            eqs = data_bot.obtener_equipos_vigentes(con, LIGAS[liga_principal]["codigo"])
+        rk = pd.DataFrame({"Equipo": eqs, "Elo": [round(est.elo.rating(t)) for t in eqs],
+                           "Partidos": [est.n.get(t, 0) for t in eqs],
+                           "Forma (últ. 5, pts)": [sum(est.pts.get(t, [])[-5:]) for t in eqs]})
+        rk = rk.sort_values("Elo", ascending=False).reset_index(drop=True)
+        rk.index += 1
+        st.caption("El Elo solo es comparable dentro de la misma liga.")
+        st.dataframe(rk, use_container_width=True)
+        st.bar_chart(rk.head(15).set_index("Equipo")["Elo"])
+        with db.sesion() as con:
+            db.guardar_elo(con, LIGAS[liga_principal]["codigo"], est.elo.ratings, est.n)
+
+# --------------------------------- BACKTEST -----------------------------------
+with tab3:
+    if P_main is None:
+        st.info("Esta liga no tiene datos suficientes. Ve a **🗄️ Datos**.")
+    else:
+        df, feats = P_main["df"], P_main["feats"]
+        st.write("En cada bloque el modelo se reentrena **solo con partidos anteriores** y predice el siguiente. "
+                 "Se compara contra Elo, cuotas de mercado (si existen) y una línea base.")
+        max_t = max(100, min(800, len(df) - 300))
+        b1, b2 = st.columns(2)
+        n_test = b1.slider("Partidos de prueba", 100, max_t, min(380, max_t), step=20)
+        bloque = b2.slider("Reentrenar cada (días)", 7, 90, 21, step=7)
+        clave = (liga_principal, half_life, w_dc, n_test, bloque, len(df))
+        if st.button("▶️ Ejecutar backtest", use_container_width=True):
+            barra = st.progress(0.0)
+            st.session_state["bt"] = (clave, bt.correr_backtest(df, feats, half_life, w_dc, n_test, bloque,
+                                                                progreso=barra.progress))
+            barra.empty()
+        if "bt" in st.session_state and st.session_state["bt"][0] == clave:
+            R = st.session_state["bt"][1]
+            y = R["y"]
+            mask = ~np.isnan(R["mercado"]).any(axis=1)
+            usar_m = mask.sum() >= 50
+            sel_ = mask if usar_m else np.ones(len(y), bool)
+            mods = {"Línea base": R["base"], "Solo Elo": R["elo"], "Dixon-Coles": R["dc"],
+                    "Clasificador": R["lr"], "Ensemble": R["ens"]}
+            if usar_m:
+                mods["Cuotas de mercado"] = R["mercado"]
+            tabla = pd.DataFrame({k: bt.metricas(v[sel_], y[sel_]) for k, v in mods.items()}).T
+            st.caption(f"Partidos evaluados: {int(sel_.sum())}" + ("" if usar_m else " · sin cuotas para comparar"))
+            st.dataframe(tabla.style.format({"Log Loss": "{:.4f}", "Brier": "{:.4f}", "Accuracy": "{:.1%}"}),
+                         use_container_width=True)
+            st.caption("Menor Log Loss y Brier = mejor. Si no superas a las cuotas, no tienes ventaja sobre el mercado.")
+            cal = bt.tabla_calibracion(R["ens"][sel_], y[sel_])
+            st.markdown("#### Curva de calibración (Ensemble)")
+            st.line_chart(cal.set_index("Predicho")[["Observado", "Ideal"]])
+            st.dataframe(cal[["Predicho", "Observado", "N"]].round(3), use_container_width=True)
+
+# -------------------------------- METODOLOGÍA ---------------------------------
+with tab5:
+    st.markdown(f"""
+**Fuente única:** football-data.co.uk, sin APIs ni claves. Premier, Championship, Bundesliga, La Liga y Serie A
+(CSV por temporada) y Brasil, Argentina, Japón, China y EE. UU. (XLSX con todas las temporadas). No hay selecciones.
+
+**Dixon-Coles:** ataque y defensa por equipo, nivel de goles de la liga, ventaja de local, `ρ` para marcadores bajos y
+decaimiento temporal (vida media {half_life} días). De su matriz salen 1X2, Over/Under, BTTS y marcadores.
+
+**Elo + clasificador logístico:** features sin fuga de información (EWMA local/visita, forma, descanso).
+Ensemble: {w_dc:.0%} Dixon-Coles y {1 - w_dc:.0%} del otro modelo.
+
+**Partido europeo entre ligas:** cada equipo conserva sus parámetros de su liga y se suma un ajuste por la fuerza
+relativa de la liga (puntos Elo). Ese ajuste es un **supuesto tuyo**, no un dato: los archivos no tienen partidos
+entre ligas. Úsalo como escenario, no como pronóstico validado.
+
+**Límites:** sin alineaciones, lesiones ni xG real, lo realista es acercarse a las cuotas de cierre, no batirlas. Brasil,
+Argentina, Japón, China y EE. UU. no traen córners ni tiros en estos archivos.
+""")
