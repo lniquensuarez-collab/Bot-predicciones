@@ -159,93 +159,78 @@ with tab1:
         o_a = q3.number_input("Cuota 2", 0.0, 100.0, 0.0, step=0.05)
 
     if st.button("🚀 CALCULAR PARTIDO", use_container_width=True):
-        if home == away and not cross:
-            st.error("⚠️ Selecciona equipos distintos.")
-            st.stop()
-        est_h, est_a = P_h["estado"], P_a["estado"]
-        dh, da = P_h["df"], P_a["df"]
-        fz_h, fz_a = fuerza.get(lig_h, 0), fuerza.get(lig_a, 0)
+            if home == away and not cross:
+                st.error("⚠️ Selecciona equipos distintos.")
+                st.stop()
+            est_h, est_a = P_h["estado"], P_a["estado"]
+            dh, da = P_h["df"], P_a["df"]
+            fz_h, fz_a = fuerza.get(lig_h, 0), fuerza.get(lig_a, 0)
 
-        # ¿Qué permite el archivo de cada liga? Si no hay ninguna estadística -> modo básico.
-        cap_h, cap_a = ft.capacidades(dh), ft.capacidades(da)
-        disp = {k: cap_h[k] and cap_a[k] for k in cap_h}
-        basico = not any(disp.values())
+            cap_h, cap_a = ft.capacidades(dh), ft.capacidades(da)
+            disp = {k: cap_h[k] and cap_a[k] for k in cap_h}
+            basico = not any(disp.values())
 
-        if cross:
-            lam, mu, rho = md.tasas_cruzadas(P_h["dc"], P_a["dc"], home, away,
-                                             fz_h * ELO_A_LOG, fz_a * ELO_A_LOG, neutral)
-            p_elo = prob_cruzada(est_h.elo.rating(home) + fz_h, est_a.elo.rating(away) + fz_a, neutral)
-        else:
-            lam, mu = md.tasas_dc(P_h["dc"], home, away, neutral)
-            rho = P_h["dc"]["rho"]
-            p_elo = est_h.elo.prob_1x2(home, away, neutral)
-        lam *= (1 + att_h / 100) * (1 + def_a / 100)
-        mu *= (1 + att_a / 100) * (1 + def_h / 100)
-        M = md.matriz(lam, mu, rho)
-        p_dc = md.probs_1x2(M)
+            if cross:
+                lam, mu, rho = md.tasas_cruzadas(P_h["dc"], P_a["dc"], home, away,
+                                                 fz_h * ELO_A_LOG, fz_a * ELO_A_LOG, neutral)
+                p_elo = prob_cruzada(est_h.elo.rating(home) + fz_h, est_a.elo.rating(away) + fz_a, neutral)
+            else:
+                lam, mu = md.tasas_dc(P_h["dc"], home, away, neutral)
+                rho = P_h["dc"]["rho"]
+                p_elo = est_h.elo.prob_1x2(home, away, neutral)
+            lam *= (1 + att_h / 100) * (1 + def_a / 100)
+            mu *= (1 + att_a / 100) * (1 + def_h / 100)
+            M = md.matriz(lam, mu, rho)
+            p_dc = md.probs_1x2(M)
 
-        p_lr = np.full(3, np.nan)
-        if not cross:
-            f = est_h.features(home, away, fecha)
-            p_lr = md.predecir_lr(P_h["lr"], pd.DataFrame([f])[ft.FEATS])[0]
+            p_lr = np.full(3, np.nan)
+            if not cross:
+                f = est_h.features(home, away, fecha)
+                p_lr = md.predecir_lr(P_h["lr"], pd.DataFrame([f])[ft.FEATS])[0]
 
-        escenario = any([att_h, att_a, def_h, def_a])
-        if escenario:
-            p_fin, usado = p_dc, "solo Dixon-Coles (escenario manual)"
-        elif cross or neutral:
-            p_fin = w_dc * p_dc + (1 - w_dc) * p_elo
-            usado = "Dixon-Coles + Elo (el clasificador se entrenó solo con partidos de liga en cancha local)"
-        else:
-            p_fin, usado = w_dc * p_dc + (1 - w_dc) * p_lr, "Dixon-Coles + clasificador"
+            escenario = any([att_h, att_a, def_h, def_a])
+            if escenario:
+                p_fin, usado = p_dc, "solo Dixon-Coles (escenario manual)"
+            elif cross or neutral:
+                p_fin = w_dc * p_dc + (1 - w_dc) * p_elo
+                usado = "Dixon-Coles + Elo (el clasificador se entrenó solo con partidos de liga en cancha local)"
+            else:
+                p_fin, usado = w_dc * p_dc + (1 - w_dc) * p_lr, "Dixon-Coles + clasificador"
 
-        # --- Incertidumbre adaptativa según historial de partidos ---
-        n_h = est_h.n.get(home, 0)
-        n_a = est_a.n.get(away, 0)
-        
-        # Factor base: 1.0 si tiene ~38 partidos (1 temporada). Máx 2.0x si tiene pocos, mín 0.7x si tiene muchos.
-        N_REF = 38.0
-        f_h = float(np.clip(math.sqrt(N_REF / max(n_h, 5)), 0.7, 2.0))
-        f_a = float(np.clip(math.sqrt(N_REF / max(n_a, 5)), 0.7, 2.0))
-        
-        # Cada tasa combina ataque de uno y defensa del otro
-        sigma_lam = sigma * math.sqrt((f_h**2 + f_a**2) / 2.0)
-        sigma_mu  = sigma * math.sqrt((f_a**2 + f_h**2) / 2.0)
+            # --- INCERTIDUMBRE ADAPTATIVA (Monte Carlo) ---
+            n_h = est_h.n.get(home, 0)
+            n_a = est_a.n.get(away, 0)
+            
+            N_REF = 38.0
+            f_h = float(np.clip(math.sqrt(N_REF / max(n_h, 5)), 0.7, 2.0))
+            f_a = float(np.clip(math.sqrt(N_REF / max(n_a, 5)), 0.7, 2.0))
+            
+            sigma_lam = sigma * math.sqrt((f_h**2 + f_a**2) / 2.0)
+            sigma_mu  = sigma * math.sqrt((f_a**2 + f_h**2) / 2.0)
 
-# --- INCERTIDUMBRE ADAPTATIVA (Monte Carlo) ---
-        n_h = est_h.n.get(home, 0)
-        n_a = est_a.n.get(away, 0)
-        
-        # Factor base: 1.0 si tiene ~38 partidos. Máx 2.0x si tiene pocos, mín 0.7x si tiene muchos.
-        N_REF = 38.0
-        f_h = float(np.clip(math.sqrt(N_REF / max(n_h, 5)), 0.7, 2.0))
-        f_a = float(np.clip(math.sqrt(N_REF / max(n_a, 5)), 0.7, 2.0))
-        
-        # Cada tasa combina el ataque de uno y la defensa del otro
-        sigma_lam = sigma * math.sqrt((f_h**2 + f_a**2) / 2.0)
-        sigma_mu  = sigma * math.sqrt((f_a**2 + f_h**2) / 2.0)
-        rng = np.random.default_rng(0)
-        s_1x2, s_o25 = [], []
-        for _ in range(500):
-            pert_lam = lam * math.exp(rng.normal(0, sigma_lam))
-            pert_mu  = mu  * math.exp(rng.normal(0, sigma_mu))
-            Ms = md.matriz(pert_lam, pert_mu, rho)
-            s_1x2.append(md.probs_1x2(Ms))
-            s_o25.append(md.mercados_goles(Ms)["Over 2.5"])
+            rng = np.random.default_rng(0)
+            s_1x2, s_o25 = [], []
+            for _ in range(500):
+                pert_lam = lam * math.exp(rng.normal(0, sigma_lam))
+                pert_mu  = mu  * math.exp(rng.normal(0, sigma_mu))
+                Ms = md.matriz(pert_lam, pert_mu, rho)
+                s_1x2.append(md.probs_1x2(Ms))
+                s_o25.append(md.mercados_goles(Ms)["Over 2.5"])
+            
+            s_1x2 = np.array(s_1x2)
+            lo, hi = np.percentile(s_1x2, 10, axis=0), np.percentile(s_1x2, 90, axis=0)
 
-        s_1x2 = np.array(s_1x2)
-        lo, hi = np.percentile(s_1x2, 10, axis=0), np.percentile(s_1x2, 90, axis=0)
+            st.subheader(f"{home} vs {away}")
+            if basico:
+                st.caption(f"Liga sin stats detalladas (solo 1X2 y goles) | {n_h} PJ vs {n_a} PJ")
+            else:
+                nota_incert = f" ⚠️ (incertidumbre alta: {n_h if n_h < 15 else n_a} PJ)" if min(n_h, n_a) < 15 else ""
+                st.caption(f"Elo interno: {est_h.elo.rating(home):.0f} ({n_h} PJ) vs {est_a.elo.rating(away):.0f} ({n_a} PJ)"
+                           + (" · cancha neutral" if neutral else "") + f" · Modelo: {usado}{nota_incert}")
 
-        st.subheader(f"{home} vs {away}")
-        if basico:
-            st.caption(f"Liga sin stats detalladas (solo 1X2 y goles) | {n_h} PJ vs {n_a} PJ")
-        else:
-            nota_incert = f" ⚠️ (incertidumbre alta: {n_h if n_h < 15 else n_a} PJ)" if min(n_h, n_a) < 15 else ""
-            st.caption(f"Elo interno: {est_h.elo.rating(home):.0f} ({n_h} PJ) vs {est_a.elo.rating(away):.0f} ({n_a} PJ)"
-                       + (" · cancha neutral" if neutral else "") + f" · Modelo: {usado}{nota_incert}")
-
-        if cross:
-            st.warning("Partido entre ligas: el resultado depende del supuesto de fuerza relativa de cada liga "
-                       "(ver el panel ⚖️). No hay datos propios para validarlo.")
+            if cross:
+                st.warning("Partido entre ligas: el resultado depende del supuesto de fuerza relativa de cada liga "
+                           "(ver el panel ⚖️). No hay datos propios para validarlo.")
         # ---- Ganador (todas las ligas) ----
         for col, nombre, i in zip(st.columns(3), ["Local", "Empate", "Visita"], range(3)):
             col.metric(nombre, f"{p_fin[i] * 100:.1f}%")
