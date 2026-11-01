@@ -451,7 +451,6 @@ with tab3:
 
 #Mejora Visual Opcional en el Subheader de la App
 st.subheader(f"{home} vs {away}")
-        st.subheader(f"{home} vs {away}")
         if basico:
             st.caption(f"Liga sin stats detalladas (solo 1X2 y goles) | {n_h} PJ vs {n_a} PJ")
         else:
