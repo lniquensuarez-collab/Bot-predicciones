@@ -223,8 +223,7 @@ with tab1:
         # Cada tasa combina el ataque de uno y la defensa del otro
         sigma_lam = sigma * math.sqrt((f_h**2 + f_a**2) / 2.0)
         sigma_mu  = sigma * math.sqrt((f_a**2 + f_h**2) / 2.0)
-
-        rng = np.random.default_rng(0)
+rng = np.random.default_rng(0)
         s_1x2, s_o25 = [], []
         for _ in range(500):
             pert_lam = lam * math.exp(rng.normal(0, sigma_lam))
@@ -235,7 +234,8 @@ with tab1:
         
         s_1x2 = np.array(s_1x2)
         lo, hi = np.percentile(s_1x2, 10, axis=0), np.percentile(s_1x2, 90, axis=0)
-st.subheader(f"{home} vs {away}")
+
+        st.subheader(f"{home} vs {away}")
         if basico:
             st.caption(f"Liga sin stats detalladas (solo 1X2 y goles) | {n_h} PJ vs {n_a} PJ")
         else:
