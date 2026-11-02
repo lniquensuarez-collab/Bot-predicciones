@@ -160,6 +160,11 @@ def test_motor():
         s_1x2_test = np.tile(md.probs_1x2(M), (50, 1))
         picks = md.selecciones_bajo_riesgo("T1_Eq1", "T1_Eq2", md.probs_1x2(M), s_1x2_test, mk, [mk] * 50)
         assert 2 <= len(picks) <= 3 and all(p["Probabilidad"] >= 0.58 for p in picks)
+        # Cuando hay claro favorito (>=72%), debe priorizar victoria directa ('Gana ...') y nunca sugerir '12'
+        p_fav = np.array([0.788, 0.122, 0.090])
+        picks_fav = md.selecciones_bajo_riesgo("Benfica", "Alverca", p_fav, np.tile(p_fav, (50, 1)), mk, [mk] * 50)
+        res_fav = [p["Selección"] for p in picks_fav if p["Categoría"] == "Resultado"]
+        assert res_fav == ["Gana Benfica"]
 
         # Verifica las 6 mejoras de apostador (asiáticos/DNB, Kelly/EV, consenso/trampa, árbitro, escáner, backtest financiero)
         asi = md.mercados_asiaticos(M, md.probs_1x2(M), "T1_Eq1", "T1_Eq2")

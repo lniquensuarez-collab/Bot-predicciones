@@ -364,20 +364,28 @@ def selecciones_bajo_riesgo(home, away, p_fin, s_1x2, mk, s_mk, secundarios=None
             })
 
     # 1. Familia Resultado (1X2, Doble Oportunidad y Draw No Bet / Empate No Acción)
-    agregar("Resultado", f"Gana {home}", p_fin[0], s_1x2[:, 0])
-    agregar("Resultado", f"Gana {away}", p_fin[2], s_1x2[:, 2])
+    p_h, p_d, p_a = float(p_fin[0]), float(p_fin[1]), float(p_fin[2])
+    agregar("Resultado", f"Gana {home}", p_h, s_1x2[:, 0])
+    agregar("Resultado", f"Gana {away}", p_a, s_1x2[:, 2])
     etq_1x = f"{home} o Empate" if basico else f"1X ({home} o Empate)"
     etq_x2 = f"{away} o Empate" if basico else f"X2 ({away} o Empate)"
     etq_12 = f"{home} o {away} (sin empate)" if basico else f"12 ({home} o {away})"
-    agregar("Resultado", etq_1x, p_fin[0] + p_fin[1], s_1x2[:, 0] + s_1x2[:, 1])
-    agregar("Resultado", etq_x2, p_fin[1] + p_fin[2], s_1x2[:, 1] + s_1x2[:, 2])
-    agregar("Resultado", etq_12, p_fin[0] + p_fin[2], s_1x2[:, 0] + s_1x2[:, 2])
-    # Draw No Bet (probabilidad de éxito excluyendo el empate)
+    # Si ya hay un claro favorito (>=72%), penalizar 1X/X2 para priorizar la victoria directa con cuota atractiva
+    pen_1x = 0.08 if p_h >= 0.72 else 0.0
+    pen_x2 = 0.08 if p_a >= 0.72 else 0.0
+    agregar("Resultado", etq_1x, p_h + p_d, s_1x2[:, 0] + s_1x2[:, 1], pen_1x)
+    agregar("Resultado", etq_x2, p_d + p_a, s_1x2[:, 1] + s_1x2[:, 2], pen_x2)
+    # 12 (Local o Visita) solo tiene sentido táctico en duelos abiertos y parejos donde el empate es el menos probable
+    if min(p_h, p_a) >= 0.24 and max(p_h, p_a) <= 0.55 and p_d < min(p_h, p_a):
+        agregar("Resultado", etq_12, p_h + p_a, s_1x2[:, 0] + s_1x2[:, 2], 0.025)
+    # Draw No Bet (solo útil para favoritos moderados <70% donde cubrir el empate aporta valor real)
     denom_dnb = np.maximum(s_1x2[:, 0] + s_1x2[:, 2], 1e-6)
-    p_dnb_h = float(p_fin[0] / max(p_fin[0] + p_fin[2], 1e-6))
-    p_dnb_a = float(p_fin[2] / max(p_fin[0] + p_fin[2], 1e-6))
-    agregar("Resultado", f"{home} DNB (Empate No Acción)", p_dnb_h, s_1x2[:, 0] / denom_dnb, 0.005)
-    agregar("Resultado", f"{away} DNB (Empate No Acción)", p_dnb_a, s_1x2[:, 2] / denom_dnb, 0.005)
+    if 0.45 <= p_h < 0.70:
+        p_dnb_h = float(p_h / max(p_h + p_a, 1e-6))
+        agregar("Resultado", f"{home} DNB (Empate No Acción)", p_dnb_h, s_1x2[:, 0] / denom_dnb, 0.015)
+    if 0.45 <= p_a < 0.70:
+        p_dnb_a = float(p_a / max(p_h + p_a, 1e-6))
+        agregar("Resultado", f"{away} DNB (Empate No Acción)", p_dnb_a, s_1x2[:, 2] / denom_dnb, 0.015)
 
     # 2. Familia Goles (Over / Under)
     for k, etq in (("Over 1.5", "Over 1.5 goles"), ("Over 2.5", "Over 2.5 goles"),
