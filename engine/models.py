@@ -406,22 +406,35 @@ def selecciones_bajo_riesgo(home, away, p_fin, s_1x2, mk, s_mk, secundarios=None
 
 
 def escanear_jornada(partidos, P_liga, fecha, w_dc=0.6, sigma=0.12, basico=False):
-    """Evalúa múltiples cruces [(local, visita), ...] de una jornada, los ordena de menor a mayor riesgo
-    y construye la Mejor Combinada Doble (2 partidos) de alta probabilidad."""
-    est, dc, lr, df = P_liga["estado"], P_liga["dc"], P_liga["lr"], P_liga["df"]
-    tasa_emp = float((df["FTR"] == "D").mean())
+    """Evalúa múltiples cruces [(local, visita), ...] o dicts multiliga [{'codigo', 'liga', 'local', 'visita'}, ...],
+    los ordena de menor a mayor riesgo y construye las mejores Combinadas Doble (2) y Triple (3)."""
+    es_multiliga = isinstance(P_liga, dict) and "estado" not in P_liga
     rng = np.random.default_rng(42)
     filas = []
 
-    for h, a in partidos:
-        if h == a:
+    for item in partidos:
+        if isinstance(item, dict):
+            h, a = item["local"], item["visita"]
+            cod = item.get("codigo")
+            nom_liga = item.get("liga", cod or "")
+            P_actual = P_liga.get(cod) if es_multiliga else P_liga
+            f_partido = pd.Timestamp(item.get("fecha", fecha))
+        else:
+            h, a = item
+            nom_liga = ""
+            P_actual = P_liga
+            f_partido = pd.Timestamp(fecha)
+
+        if h == a or P_actual is None:
             continue
+        est, dc, lr, df = P_actual["estado"], P_actual["dc"], P_actual["lr"], P_actual["df"]
+        tasa_emp = float((df["FTR"] == "D").mean())
         lam, mu = tasas_dc(dc, h, a, False)
         rho = dc["rho"]
         M = matriz(lam, mu, rho)
         p_dc = probs_1x2(M)
         p_elo = est.elo.prob_1x2(h, a, False, tasa_empate=tasa_emp)
-        f = est.features(h, a, fecha)
+        f = est.features(h, a, f_partido)
         p_lr = predecir_lr(lr, pd.DataFrame([f])[FEATS])[0]
         p_fin = w_dc * p_dc + (1.0 - w_dc) * p_lr
 
@@ -446,22 +459,27 @@ def escanear_jornada(partidos, P_liga, fecha, w_dc=0.6, sigma=0.12, basico=False
         if not picks:
             continue
         mejor = picks[0]
-        filas.append({
+        fila = {}
+        if nom_liga:
+            fila["Liga"] = nom_liga
+        fila.update({
             "Partido": f"{h} vs {a}",
             "Mejor selección": mejor["Selección"],
             "Categoría": mejor["Categoría"],
             "Probabilidad %": round(mejor["Probabilidad"] * 100, 1),
             "Piso MC (P10) %": round(mejor["P10"] * 100, 1),
             "Cuota justa": mejor["Cuota justa"],
+            "Cuota valor (EV≥2%)": round(1.02 / max(mejor["Probabilidad"], 1e-6), 2),
             "Riesgo": mejor["Riesgo"],
             "Consenso": cons["estado"],
             "_p": mejor["Probabilidad"],
             "_p10": mejor["P10"],
             "_trampa": cons["es_trampa"],
         })
+        filas.append(fila)
 
     filas.sort(key=lambda x: (not x["_trampa"], x["_p10"], x["_p"]), reverse=True)
-    combinada = None
+    combinada, triple = None, None
     aptos = [x for x in filas if not x["_trampa"]] or filas
     if len(aptos) >= 2:
         a1, a2 = aptos[0], aptos[1]
@@ -473,8 +491,22 @@ def escanear_jornada(partidos, P_liga, fecha, w_dc=0.6, sigma=0.12, basico=False
             "Probabilidad conjunta %": round(p_comb * 100.0, 1),
             "Piso conjunto (P10) %": round(p10_comb * 100.0, 1),
             "Cuota justa combinada": round(1.0 / max(p_comb, 1e-6), 2),
+            "Cuota con valor (EV≥2%)": round(1.02 / max(p_comb, 1e-6), 2),
+        }
+    if len(aptos) >= 3:
+        a1, a2, a3 = aptos[0], aptos[1], aptos[2]
+        p_tri = a1["_p"] * a2["_p"] * a3["_p"]
+        p10_tri = a1["_p10"] * a2["_p10"] * a3["_p10"]
+        triple = {
+            "Selección 1": f"{a1['Partido']}: {a1['Mejor selección']} ({a1['Probabilidad %']:.1f}%)",
+            "Selección 2": f"{a2['Partido']}: {a2['Mejor selección']} ({a2['Probabilidad %']:.1f}%)",
+            "Selección 3": f"{a3['Partido']}: {a3['Mejor selección']} ({a3['Probabilidad %']:.1f}%)",
+            "Probabilidad conjunta %": round(p_tri * 100.0, 1),
+            "Piso conjunto (P10) %": round(p10_tri * 100.0, 1),
+            "Cuota justa combinada": round(1.0 / max(p_tri, 1e-6), 2),
+            "Cuota con valor (EV≥2%)": round(1.02 / max(p_tri, 1e-6), 2),
         }
     for x in filas:
         for k in ("_p", "_p10", "_trampa"):
             x.pop(k, None)
-    return {"ranking": pd.DataFrame(filas), "combinada": combinada}
+    return {"ranking": pd.DataFrame(filas), "combinada": combinada, "triple": triple}

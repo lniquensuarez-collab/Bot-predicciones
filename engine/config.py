@@ -8,6 +8,26 @@ DB_PATH = Path(os.getenv("FUTBOL_DB", BASE_DIR / "data" / "futbol.db"))
 
 URL_CSV = "https://football-data.co.uk/mmz4281/{t}/{c}.csv"
 URL_XLSX = "https://football-data.co.uk/new/{c}.xlsx"
+URL_FIXTURES_CSV = "https://www.football-data.co.uk/fixtures.csv"
+URL_FIXTURES_NEW = "https://www.football-data.co.uk/new_league_fixtures.csv"
+URL_ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/soccer/{slug}/scoreboard?dates={ymd}"
+
+# Slugs públicos de ESPN (sin API key) para consultar el calendario diario de nuestras 13 ligas
+ESPN_SLUGS = {
+    "E0": "eng.1",
+    "E1": "eng.2",
+    "D1": "ger.1",
+    "SP1": "esp.1",
+    "I1": "ita.1",
+    "F1": "fra.1",
+    "P1": "por.1",
+    "T1": "tur.1",
+    "BRA": "bra.1",
+    "ARG": "arg.1",
+    "JPN": "jpn.1",
+    "CHN": "chn.1",
+    "USA": "usa.1",
+}
 
 # fuente: csv (una temporada por archivo) | xlsx (un archivo con todas las temporadas)
 # europa: puede participar en el modo "partido europeo entre ligas"

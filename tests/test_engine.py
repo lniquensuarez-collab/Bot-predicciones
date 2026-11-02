@@ -171,6 +171,19 @@ def test_motor():
         scan = md.escanear_jornada([("T1_Eq1", "T1_Eq2"), ("T1_Eq3", "T1_Eq4")],
                                    {"estado": est, "dc": dc, "lr": lr, "df": df}, df["Date"].max())
         assert len(scan["ranking"]) == 2 and scan["combinada"] is not None
+        # Verifica búsqueda de partidos del día y escaneo multiliga (Doble + Triple)
+        assert data_bot._emparejar_equipo("Manchester United", ["Man United", "Arsenal"]) == "Man United"
+        f_muestra = df["Date"].iloc[-1].strftime("%Y-%m-%d")
+        partidos_dia = data_bot.buscar_partidos_del_dia(con, f_muestra, ["🇹🇷 Turquía · Süper Lig"], ventana_dias=5)
+        assert len(partidos_dia) >= 1 and partidos_dia[0]["codigo"] == "T1"
+        scan_multi = md.escanear_jornada(
+            [{"liga": "Turquía", "codigo": "T1", "local": "T1_Eq1", "visita": "T1_Eq2"},
+             {"liga": "Turquía", "codigo": "T1", "local": "T1_Eq3", "visita": "T1_Eq4"},
+             {"liga": "Turquía", "codigo": "T1", "local": "T1_Eq5", "visita": "T1_Eq6"}],
+            {"T1": {"estado": est, "dc": dc, "lr": lr, "df": df}},
+            df["Date"].max(),
+        )
+        assert scan_multi["combinada"] is not None and scan_multi["triple"] is not None
 
         # Modo europeo entre ligas
         df2 = db.cargar_partidos("T2", con)

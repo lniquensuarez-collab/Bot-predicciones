@@ -19,7 +19,10 @@ from engine import features as ft
 from engine import models as md
 
 # En Streamlit Cloud, al actualizar por Git sin reiniciar contenedor, recarga submódulos si quedaron en caché
-if not hasattr(ft.Estado, "arbitros_disponibles") or not hasattr(md, "mercados_asiaticos") or not hasattr(bt, "simular_apuestas"):
+if (not hasattr(ft.Estado, "arbitros_disponibles")
+        or not hasattr(md, "mercados_asiaticos")
+        or not hasattr(bt, "simular_apuestas")
+        or not hasattr(data_bot, "buscar_partidos_del_dia")):
     for _mod in (_cfg, _elo, db, data_bot, ft, md, bt):
         importlib.reload(_mod)
 
@@ -73,8 +76,29 @@ with st.sidebar:
     half_life = st.slider("Vida media del peso temporal (días)", 90, 900, 365, step=30)
     w_dc = st.slider("Peso de Dixon-Coles en el ensemble", 0.0, 1.0, 0.6, step=0.1)
     liga_principal = st.selectbox("🏆 Liga (ranking y backtest)", list(LIGAS))
+    st.divider()
+    ir_comb = st.button("🎯 Combinadas", use_container_width=True,
+                        help="Abre la pestaña de Escáner de Jornada, Partidos del Día y Armador de Combinadas")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔮 Predicción", "🏅 Ranking Elo", "📈 Backtest", "🗄️ Datos", "ℹ️ Metodología"])
+tab1, tab_comb, tab2, tab3, tab4, tab5 = st.tabs([
+    "🔮 Predicción", "🎯 Combinadas", "🏅 Ranking Elo", "📈 Backtest", "🗄️ Datos", "ℹ️ Metodología"
+])
+
+if ir_comb:
+    st.session_state["ir_combinadas"] = True
+    try:
+        import streamlit.components.v1 as components
+        components.html(
+            """<script>
+            const tabs = window.parent.document.querySelectorAll('button[data-baseweb="tab"]');
+            for (const t of tabs) {
+                if (t.innerText.includes('Combinadas')) { t.click(); break; }
+            }
+            </script>""",
+            height=0,
+        )
+    except Exception:
+        pass
 
 # ------------------------------- primera carga --------------------------------
 with db.sesion() as con:
@@ -492,30 +516,6 @@ with tab1:
             ]).set_index("Selección")
             st.dataframe(df_riesgo, use_container_width=True)
 
-    # ---- Escáner de Jornada / Armador de Combinada Doble ----
-    if not cross and len(eq_h) >= 4:
-        with st.expander("🔍 Escáner de Jornada y Armador de Combinada Doble (2 partidos)"):
-            st.caption("Selecciona hasta 5 partidos de la jornada para ordenarlos de menor a mayor riesgo "
-                       "y obtener la Mejor Combinada Doble sin incluir partidos trampa.")
-            n_cruces = min(4, len(eq_h) // 2)
-            partidos_scan = []
-            for idx_c in range(n_cruces):
-                sc1, sc2 = st.columns(2)
-                eh_i = sc1.selectbox(f"Local #{idx_c + 1}", eq_h, index=(idx_c * 2) % len(eq_h), key=f"sc_h_{idx_c}")
-                ea_i = sc2.selectbox(f"Visita #{idx_c + 1}", eq_h, index=(idx_c * 2 + 1) % len(eq_h), key=f"sc_a_{idx_c}")
-                if eh_i != ea_i:
-                    partidos_scan.append((eh_i, ea_i))
-            if st.button("📊 Escanear jornada y armar combinada doble", use_container_width=True):
-                res_scan = md.escanear_jornada(partidos_scan, P_h, fecha, w_dc=w_dc, sigma=sigma, basico=basico)
-                if not res_scan["ranking"].empty:
-                    st.dataframe(res_scan["ranking"], use_container_width=True, hide_index=True)
-                if res_scan["combinada"]:
-                    cb = res_scan["combinada"]
-                    st.success(f"🤝 **Mejor Combinada Doble:** {cb['Selección 1']}  ➕  {cb['Selección 2']}  \n"
-                               f"Probabilidad conjunta: **{cb['Probabilidad conjunta %']:.1f}%** "
-                               f"(Piso P10: {cb['Piso conjunto (P10) %']:.1f}%) · "
-                               f"Cuota mínima justa: **{cb['Cuota justa combinada']:.2f}**")
-
 # --------------------------------- RANKING ------------------------------------
 with tab2:
     if P_main is None:
@@ -534,6 +534,104 @@ with tab2:
         st.bar_chart(rk.head(15).set_index("Equipo")["Elo"])
         with db.sesion() as con:
             db.guardar_elo(con, LIGAS[liga_principal]["codigo"], est.elo.ratings, est.n)
+
+# ------------------------------- COMBINADAS -----------------------------------
+with tab_comb:
+    st.subheader("🎯 Escáner de Jornada y Armador de Combinadas")
+    st.caption("Busca automáticamente los partidos del día en las ligas de la app o arma tu propia lista de encuentros "
+               "para detectar los más seguros y construir la Mejor Combinada Doble (2) y Triple (3).")
+
+    if "partidos_jornada" not in st.session_state:
+        st.session_state["partidos_jornada"] = []
+
+    col_f1, col_f2 = st.columns([2, 1])
+    fecha_jornada = pd.Timestamp(col_f1.date_input("📅 Fecha de los partidos a buscar", value=date.today(), key="f_comb"))
+    ventana_dias = col_f2.selectbox("🗓️ Rango de búsqueda", [0, 1, 2, 3], index=0,
+                                    format_func=lambda d: "Solo ese día" if d == 0 else f"Ese día + {d} día(s)")
+    ligas_busq = st.multiselect("🏆 Ligas donde buscar partidos del día", list(LIGAS), default=list(LIGAS), key="ligs_comb")
+
+    b_busq, b_limp = st.columns([3, 1])
+    if b_busq.button("🔎 Buscar partidos del día", use_container_width=True):
+        with st.spinner("Buscando partidos programados en las ligas seleccionadas..."):
+            with db.sesion() as con:
+                fn_busq = getattr(data_bot, "buscar_partidos_del_dia", None)
+                hallados = fn_busq(con, fecha_jornada, ligas_busq, ventana_dias=ventana_dias) if callable(fn_busq) else []
+        st.session_state["partidos_jornada"] = hallados
+        if hallados:
+            st.success(f"✅ Se encontraron {len(hallados)} partido(s) en las ligas de la app.")
+        else:
+            st.warning("No se encontraron partidos programados en esa fecha para las ligas seleccionadas. "
+                       "Puedes probar ampliando el rango de días o agregar partidos manualmente abajo.")
+
+    if b_limp.button("🗑️ Vaciar lista", use_container_width=True):
+        st.session_state["partidos_jornada"] = []
+
+    with st.expander("➕ Agregar partidos manualmente a la lista (de cualquier liga)"):
+        lig_man = st.selectbox("Liga del partido", list(LIGAS), index=list(LIGAS).index(liga_principal), key="cm_liga")
+        cod_man = LIGAS[lig_man]["codigo"]
+        with db.sesion() as con:
+            eqs_man = data_bot.obtener_equipos_vigentes(con, cod_man)
+        if len(eqs_man) >= 2:
+            mc1, mc2, mc3 = st.columns([2, 2, 1])
+            mh = mc1.selectbox("Local", eqs_man, index=0, key="cm_h")
+            ma = mc2.selectbox("Visita", eqs_man, index=min(1, len(eqs_man) - 1), key="cm_a")
+            if mc3.button("➕ Añadir", use_container_width=True):
+                if mh != ma:
+                    nuevo = {"liga": lig_man, "codigo": cod_man, "fecha": fecha_jornada.strftime("%Y-%m-%d"),
+                             "local": mh, "visita": ma, "fuente": "manual"}
+                    if not any(p["codigo"] == cod_man and p["local"] == mh and p["visita"] == ma
+                               for p in st.session_state["partidos_jornada"]):
+                        st.session_state["partidos_jornada"].append(nuevo)
+                else:
+                    st.warning("Elige dos equipos distintos.")
+
+    lista_actual = st.session_state["partidos_jornada"]
+    if lista_actual:
+        st.markdown(f"**📋 Partidos cargados para escanear ({len(lista_actual)}):**")
+        df_prev = pd.DataFrame([
+            {"Fecha": p.get("fecha", ""), "Liga": p.get("liga", ""), "Local": p["local"],
+             "Visita": p["visita"], "Origen": p.get("fuente", "")}
+            for p in lista_actual
+        ])
+        st.dataframe(df_prev, use_container_width=True, hide_index=True)
+
+        if st.button("📊 ANALIZAR PARTIDOS Y ARMAR COMBINADAS", use_container_width=True):
+            cods_unicos = sorted({p["codigo"] for p in lista_actual if "codigo" in p})
+            mapa_ligas = {}
+            for cod_u in cods_unicos:
+                mapa_ligas[cod_u] = (P_main if cod_u == LIGAS[liga_principal]["codigo"]
+                                     else preparar_liga(cod_u, half_life))
+            res_scan = md.escanear_jornada(lista_actual, mapa_ligas, fecha_jornada, w_dc=w_dc, sigma=0.12)
+
+            if res_scan.get("combinada"):
+                cb = res_scan["combinada"]
+                st.success(
+                    f"🥇 **Mejor Combinada Doble (2 partidos):**  \n"
+                    f"• {cb['Selección 1']}  \n"
+                    f"• {cb['Selección 2']}  \n"
+                    f"**Probabilidad conjunta:** `{cb['Probabilidad conjunta %']:.1f}%` "
+                    f"(Piso Monte Carlo P10: `{cb['Piso conjunto (P10) %']:.1f}%`) · "
+                    f"**Cuota justa:** `{cb['Cuota justa combinada']:.2f}` · "
+                    f"**Cuota con valor (EV≥2%):** `{cb.get('Cuota con valor (EV≥2%)', cb['Cuota justa combinada']):.2f}`"
+                )
+            if res_scan.get("triple"):
+                tr = res_scan["triple"]
+                st.info(
+                    f"🥈 **Mejor Combinada Triple (3 partidos):**  \n"
+                    f"• {tr['Selección 1']}  \n"
+                    f"• {tr['Selección 2']}  \n"
+                    f"• {tr['Selección 3']}  \n"
+                    f"**Probabilidad conjunta:** `{tr['Probabilidad conjunta %']:.1f}%` "
+                    f"(Piso Monte Carlo P10: `{tr['Piso conjunto (P10) %']:.1f}%`) · "
+                    f"**Cuota justa:** `{tr['Cuota justa combinada']:.2f}` · "
+                    f"**Cuota con valor (EV≥2%):** `{tr.get('Cuota con valor (EV≥2%)', tr['Cuota justa combinada']):.2f}`"
+                )
+            if not res_scan["ranking"].empty:
+                st.markdown("#### 📊 Ranking de Seguridad de Todos los Partidos")
+                st.caption("Ordenados del más seguro al más riesgoso. Los marcados como 🔴 Partido Trampa se excluyen de las combinadas.")
+                st.dataframe(res_scan["ranking"], use_container_width=True, hide_index=True)
+    else:
+        st.info("Pulsa **🔎 Buscar partidos del día** arriba o abre **➕ Agregar partidos manualmente** para empezar.")
 
 # --------------------------------- BACKTEST -----------------------------------
 with tab3:
