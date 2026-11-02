@@ -23,10 +23,12 @@ def sinteticos(codigo, n=700, seed=0, c0=0.30, ha0=0.20):
         h, a = rng.choice(10, 2, replace=False)
         gl = rng.poisson(np.exp(c0 + ha0 + att[h] - dfn[a]))
         gv = rng.poisson(np.exp(c0 + att[a] - dfn[h]))
+        sot_l = float(rng.poisson(max(1.0, 3.8 * np.exp(att[h] - dfn[a]))))
+        sot_v = float(rng.poisson(max(1.0, 3.0 * np.exp(att[a] - dfn[h]))))
         f = (base + pd.Timedelta(days=int(k * 0.9))).strftime("%Y-%m-%d")
         filas.append(dict(id=f"{codigo}:{k}", tipo="club", competicion=codigo, temporada="2526", fecha=f,
                           local=eq[h], visita=eq[a], goles_l=int(gl), goles_v=int(gv),
-                          tiros_p_l=float(rng.poisson(4)), tiros_p_v=float(rng.poisson(3)),
+                          tiros_p_l=sot_l, tiros_p_v=sot_v,
                           corners_l=float(rng.poisson(5)), corners_v=float(rng.poisson(4)),
                           faltas_l=float(rng.poisson(11)), faltas_v=float(rng.poisson(12)),
                           amarillas_l=float(rng.poisson(1.8)), amarillas_v=float(rng.poisson(2.1)),

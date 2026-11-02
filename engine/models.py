@@ -491,9 +491,10 @@ def escanear_jornada(partidos, P_liga, fecha, w_dc=0.6, sigma=0.12, basico=False
 
     filas.sort(key=lambda x: (not x["_trampa"], x["_p10"], x["_p"]), reverse=True)
     combinada, triple = None, None
-    aptos = [x for x in filas if not x["_trampa"]] or filas
-    if len(aptos) >= 2:
-        a1, a2 = aptos[0], aptos[1]
+    no_trampa = [x for x in filas if not x["_trampa"]]
+    aptos_doble = no_trampa if len(no_trampa) >= 2 else filas
+    if len(aptos_doble) >= 2:
+        a1, a2 = aptos_doble[0], aptos_doble[1]
         p_comb = a1["_p"] * a2["_p"]
         p10_comb = a1["_p10"] * a2["_p10"]
         combinada = {
@@ -504,8 +505,9 @@ def escanear_jornada(partidos, P_liga, fecha, w_dc=0.6, sigma=0.12, basico=False
             "Cuota justa combinada": round(1.0 / max(p_comb, 1e-6), 2),
             "Cuota con valor (EV≥2%)": round(1.02 / max(p_comb, 1e-6), 2),
         }
-    if len(aptos) >= 3:
-        a1, a2, a3 = aptos[0], aptos[1], aptos[2]
+    aptos_triple = no_trampa if len(no_trampa) >= 3 else filas
+    if len(aptos_triple) >= 3:
+        a1, a2, a3 = aptos_triple[0], aptos_triple[1], aptos_triple[2]
         p_tri = a1["_p"] * a2["_p"] * a3["_p"]
         p10_tri = a1["_p10"] * a2["_p10"] * a3["_p10"]
         triple = {
