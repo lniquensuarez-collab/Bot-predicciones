@@ -3,6 +3,7 @@
 # 📱 ULTIMATE AI V14 - Ligas de clubes (football-data.co.uk) + modo europeo
 # Ejecutar:  streamlit run app.py
 # ==============================================================================
+import importlib
 import math
 from datetime import date
 
@@ -10,10 +11,18 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+import engine. config as _cfg
+import engine.elo_system as _elo
 from engine import backtest as bt
 from engine import data_bot, db
 from engine import features as ft
 from engine import models as md
+
+# En Streamlit Cloud, al actualizar por Git sin reiniciar contenedor, recarga submódulos si quedaron en caché
+if not hasattr(ft.Estado, "arbitros_disponibles") or not hasattr(md, "mercados_asiaticos") or not hasattr(bt, "simular_apuestas"):
+    for _mod in (_cfg, _elo, db, data_bot, ft, md, bt):
+        importlib.reload(_mod)
+
 from engine.config import ELO_A_LOG, LIGAS
 from engine.elo_system import prob_cruzada
 
@@ -39,7 +48,7 @@ def ejecutar(fn, *args, **kw):
 
 
 @st.cache_data(show_spinner="Preparando liga (Elo, features, modelos)...")
-def preparar_liga(codigo, half_life):
+def preparar_liga(codigo, half_life, _version="v14.2"):
     df = db.cargar_partidos(codigo)
     if len(df) < 200:
         return None
@@ -76,16 +85,19 @@ with db.sesion() as con:
             st.warning(a)
         st.cache_data.clear()
 
-# Bases creadas con una versión anterior no tienen faltas/tarjetas: se completan una sola vez por sesión.
-if not st.session_state.get("refresco_faltas"):
-    st.session_state["refresco_faltas"] = True
+# Bases creadas con una versión anterior no tienen faltas/tarjetas/árbitros: se completan una sola vez por sesión.
+if not st.session_state.get("refresco_faltas_v2"):
+    st.session_state["refresco_faltas_v2"] = True
     with db.sesion() as con:
         cods_csv = tuple(c["codigo"] for c in LIGAS.values() if c["fuente"] == "csv")
         placeholders = ",".join("?" * len(cods_csv))
-        r = con.execute(f"SELECT COUNT(*), COUNT(faltas_l) FROM partidos WHERE competicion IN ({placeholders})", cods_csv).fetchone()
-        if r[0] > 0 and r[1] == 0:
+        r = con.execute(
+            f"SELECT COUNT(*), COUNT(faltas_l), COUNT(arbitro) FROM partidos WHERE competicion IN ({placeholders})",
+            cods_csv,
+        ).fetchone()
+        if r[0] > 0 and (r[1] == 0 or r[2] == 0):
             pend = [n for n, c in LIGAS.items() if c["fuente"] == "csv"]
-            with st.spinner("Actualizando datos para incluir faltas y tarjetas..."):
+            with st.spinner("Actualizando datos para incluir faltas, tarjetas y árbitros..."):
                 data_bot.ingestar_ligas(con, pend, extra_temporadas=0)
             st.cache_data.clear()
 
@@ -146,7 +158,8 @@ with tab1:
     away = c2.selectbox("✈️ Visita:", eq_a, index=min(1, len(eq_a) - 1) if eq_a else 0)
     fecha = pd.Timestamp(st.date_input("📅 Fecha del partido", value=date.today()))
 
-    arbs_disp = P_h["estado"].arbitros_disponibles() if not cross else []
+    fn_arbs = getattr(P_h["estado"], "arbitros_disponibles", None)
+    arbs_disp = fn_arbs() if (not cross and callable(fn_arbs)) else []
     with st.expander("🎛️ Escenario (ajustes manuales y árbitro)"):
         st.caption("Si modificas los % de ataque/defensa se usa solo Dixon-Coles. El árbitro ajusta faltas y tarjetas.")
         arbitro_sel = st.selectbox("⚖️ Árbitro designado (opcional, ajusta faltas y tarjetas)",
@@ -393,7 +406,9 @@ with tab1:
         # ---- Faltas y tarjetas por equipo (con factor árbitro bayesiano) ----
         if disp["faltas"] or disp["tarjetas"]:
             st.markdown("#### 🟨 Faltas y tarjetas por equipo")
-            f_arb = est_h.factor_arbitro(None if arbitro_sel.startswith("Promedio") else arbitro_sel)
+            fn_farb = getattr(est_h, "factor_arbitro", None)
+            f_arb = (fn_farb(None if arbitro_sel.startswith("Promedio") else arbitro_sel)
+                     if callable(fn_farb) else {"faltas": 1.0, "amarillas": 1.0, "rojas": 1.0, "partidos": 0})
             if f_arb["partidos"] > 0:
                 st.caption(f"Árbitro activo: **{arbitro_sel}** ({f_arb['partidos']} PJ en liga) · "
                            f"Ajuste bayesiano: Faltas ×{f_arb['faltas']:.2f}, Amarillas ×{f_arb['amarillas']:.2f}, Rojas ×{f_arb['rojas']:.2f}")
