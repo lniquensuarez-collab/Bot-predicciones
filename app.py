@@ -370,7 +370,7 @@ with tab1:
             return md.dispersion_nb(tot_l, weights=w_l)
 
         # ---- Córners y tiros a puerta ----
-        filas, sec_cands = [], []
+        tablas_ct, sec_cands = [], []
         for etiqueta, clave, favor, contra, ch, ca, lns in (
             ("Córners", "corners", "C", "CA", "HC", "AC", [8.5, 9.5, 10.5, 11.5]),
             ("Tiros a puerta", "tiros", "ST", "STA", "HST", "AST", [6.5, 7.5, 8.5, 9.5]),
@@ -391,17 +391,17 @@ with tab1:
                 sec_cands.append({"familia": etiqueta, "nombre": f"Under {l} {etiqueta.lower()}",
                                   "prob": 1.0 - p_ov, "muestras": [1.0 - x for x in sim_ov]})
 
-            fila = {"Mercado": etiqueta, "Esp. local": eh, "Esp. visita": ea, "Total": tot_esp}
-            fila.update({f"Over {l} %": v * 100 for l, v in po.items()}) 
-            filas.append(fila)
-            
-        if filas:
+            fila = {"Esp. local": eh, "Esp. visita": ea, "Total": tot_esp}
+            fila.update({f"Over {l}": v * 100 for l, v in po.items()})
+            tablas_ct.append((etiqueta, pd.DataFrame([fila], index=[etiqueta])))
+
+        if tablas_ct:
             st.markdown("#### 🚩 Córners y 🎯 tiros a puerta")
             st.caption("Mercados muy ruidosos: úsalos como orientación, no como señal fuerte.")
-            df_ct = pd.DataFrame(filas).set_index("Mercado")
-            formato_ct = {col: "{:.1f}%" for col in df_ct.columns if "Over" in col}
-            formato_ct.update({"Esp. local": "{:.1f}", "Esp. visita": "{:.1f}", "Total": "{:.1f}"})
-            st.dataframe(df_ct.style.format(formato_ct, na_rep="-"), use_container_width=True)
+            for _, df_ct in tablas_ct:
+                formato_ct = {col: "{:.1f}%" for col in df_ct.columns if "Over" in col}
+                formato_ct.update({"Esp. local": "{:.1f}", "Esp. visita": "{:.1f}", "Total": "{:.1f}"})
+                st.dataframe(df_ct.style.format(formato_ct, na_rep="-"), use_container_width=True)
 
         # ---- Faltas y tarjetas por equipo (con factor árbitro bayesiano) ----
         if disp["faltas"] or disp["tarjetas"]:
@@ -426,11 +426,11 @@ with tab1:
                 r_eq_h = disp_equipo(dh, home, "HF", "AF")
                 r_eq_a = disp_equipo(da, away, "HF", "AF")
                 
-                tot_tablas["Faltas totales"] = {f"Over {l} %": v * 100 for l, v in
+                tot_tablas["Faltas totales"] = {f"Over {l}": v * 100 for l, v in
                                                 md.prob_over_nb(fh + fa, r_tot, [20.5, 22.5, 24.5, 26.5]).items()}
                 eq_tablas["Faltas"] = pd.DataFrame(
-                    {f"Over {l} %": [md.prob_over_nb(fh, r_eq_h, [l])[l] * 100,
-                                     md.prob_over_nb(fa, r_eq_a, [l])[l] * 100]
+                    {f"Over {l}": [md.prob_over_nb(fh, r_eq_h, [l])[l] * 100,
+                                   md.prob_over_nb(fa, r_eq_a, [l])[l] * 100]
                      for l in [10.5, 12.5, 14.5]}, index=[home[:18], away[:18]])
 
             if disp["tarjetas"]:
@@ -442,11 +442,11 @@ with tab1:
                 r_eq_h = disp_equipo(dh, home, "HY", "AY")
                 r_eq_a = disp_equipo(da, away, "HY", "AY")
                 
-                tot_tablas["Amarillas totales"] = {f"Over {l} %": v * 100 for l, v in
+                tot_tablas["Amarillas totales"] = {f"Over {l}": v * 100 for l, v in
                                                    md.prob_over_nb(yh + ya, r_tot, [2.5, 3.5, 4.5, 5.5]).items()}
                 eq_tablas["Amarillas"] = pd.DataFrame(
-                    {f"Over {l} %": [md.prob_over_nb(yh, r_eq_h, [l])[l] * 100,
-                                     md.prob_over_nb(ya, r_eq_a, [l])[l] * 100]
+                    {f"Over {l}": [md.prob_over_nb(yh, r_eq_h, [l])[l] * 100,
+                                   md.prob_over_nb(ya, r_eq_a, [l])[l] * 100]
                      for l in [0.5, 1.5, 2.5, 3.5]}, index=[home[:18], away[:18]])
 
             if disp["tarjetas"] and disp["rojas"]:
