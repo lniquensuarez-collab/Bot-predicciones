@@ -218,20 +218,26 @@ with tab1:
         drift_mu  = -0.5 * sigma_mu**2
 
         rng = np.random.default_rng(0)
-        s_1x2, s_o25 = [], []
+        s_1x2, s_o25, s_mk, mult_tot = [], [], [], []
         p_sec = p_elo if (cross or neutral) else p_lr
         for _ in range(500):
-            pert_lam = lam * math.exp(rng.normal(drift_lam, sigma_lam))
-            pert_mu  = mu  * math.exp(rng.normal(drift_mu, sigma_mu))
+            m_l = math.exp(rng.normal(drift_lam, sigma_lam))
+            m_v = math.exp(rng.normal(drift_mu, sigma_mu))
+            pert_lam = lam * m_l
+            pert_mu  = mu  * m_v
+            mult_tot.append(0.5 * (m_l + m_v))
             Ms = md.matriz(pert_lam, pert_mu, rho)
             p_dc_s = md.probs_1x2(Ms)
             if escenario:
                 s_1x2.append(p_dc_s)
             else:
                 s_1x2.append(w_dc * p_dc_s + (1.0 - w_dc) * p_sec)
-            s_o25.append(md.mercados_goles(Ms)["Over 2.5"])
+            mk_s = md.mercados_goles(Ms)
+            s_mk.append(mk_s)
+            s_o25.append(mk_s["Over 2.5"])
 
         s_1x2 = np.array(s_1x2)
+        mult_tot = np.array(mult_tot)
         lo, hi = np.percentile(s_1x2, 10, axis=0), np.percentile(s_1x2, 90, axis=0)
 
         st.subheader(f"{home} vs {away}")
@@ -326,7 +332,7 @@ with tab1:
             return md.dispersion_nb(tot_l, weights=w_l)
 
         # ---- Córners y tiros a puerta ----
-        filas = []
+        filas, sec_cands = [], []
         for etiqueta, clave, favor, contra, ch, ca, lns in (
             ("Córners", "corners", "C", "CA", "HC", "AC", [8.5, 9.5, 10.5, 11.5]),
             ("Tiros a puerta", "tiros", "ST", "STA", "HST", "AST", [6.5, 7.5, 8.5, 9.5]),
@@ -334,11 +340,20 @@ with tab1:
             if not disp[clave]:
                 continue
             eh, ea = esperados(est_h, est_a, home, away, favor, contra, dh, ch, da, ca)
-            
+            tot_esp = eh + ea
+
             r_tot = disp_partido(dh, da, home, away, ch, ca)
-            po = md.prob_over_nb(eh + ea, r_tot, lns)
-            
-            fila = {"Mercado": etiqueta, "Esp. local": eh, "Esp. visita": ea, "Total": eh + ea}
+            po = md.prob_over_nb(tot_esp, r_tot, lns)
+            mu_sim = tot_esp * mult_tot[::5]  # 100 muestras para cuantiles de conteos
+            for l in (lns[0], lns[-1]):
+                p_ov = po[l]
+                sim_ov = [md.prob_over_nb(float(m_s), r_tot, [l])[l] for m_s in mu_sim]
+                sec_cands.append({"familia": etiqueta, "nombre": f"Over {l} {etiqueta.lower()}",
+                                  "prob": p_ov, "muestras": sim_ov})
+                sec_cands.append({"familia": etiqueta, "nombre": f"Under {l} {etiqueta.lower()}",
+                                  "prob": 1.0 - p_ov, "muestras": [1.0 - x for x in sim_ov]})
+
+            fila = {"Mercado": etiqueta, "Esp. local": eh, "Esp. visita": ea, "Total": tot_esp}
             fila.update({f"Over {l} %": v * 100 for l, v in po.items()}) 
             filas.append(fila)
             
@@ -403,6 +418,30 @@ with tab1:
                 for nombre, tabla in eq_tablas.items():
                     st.write(f"**{nombre}**")
                     st.dataframe(tabla.style.format("{:.1f}%", na_rep="-"), use_container_width=True)
+
+        # ---- Resumen: Selecciones de mayor probabilidad y bajo riesgo (Top 2-3) ----
+        top_riesgo = md.selecciones_bajo_riesgo(home, away, p_fin, s_1x2, mk, s_mk,
+                                                secundarios=sec_cands, basico=basico, max_picks=3)
+        if top_riesgo:
+            st.markdown("#### 🛡️ Resumen: Opciones más probables y de bajo riesgo")
+            st.caption("Seleccionadas combinando alta probabilidad esperada, piso de seguridad en Monte Carlo (P10) "
+                       "y diversificación entre categorías para no repetir el mismo mercado.")
+            for col, pick in zip(st.columns(len(top_riesgo)), top_riesgo):
+                col.metric(pick["Selección"], f"{pick['Probabilidad'] * 100:.1f}%")
+                col.caption(f"{pick['Riesgo']} · Piso–Techo: {pick['P10'] * 100:.0f}–{pick['P90'] * 100:.0f}% "
+                            f"· Cuota mín.: {pick['Cuota justa']:.2f}")
+            df_riesgo = pd.DataFrame([
+                {
+                    "Selección": p["Selección"],
+                    "Categoría": p["Categoría"],
+                    "Probabilidad %": round(p["Probabilidad"] * 100, 1),
+                    "Rango MC (10–90%)": f"{p['P10'] * 100:.0f}% – {p['P90'] * 100:.0f}%",
+                    "Cuota mín. justa": p["Cuota justa"],
+                    "Nivel de riesgo": p["Riesgo"],
+                }
+                for p in top_riesgo
+            ]).set_index("Selección")
+            st.dataframe(df_riesgo, use_container_width=True)
 
 # --------------------------------- RANKING ------------------------------------
 with tab2:

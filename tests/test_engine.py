@@ -150,6 +150,11 @@ def test_motor():
         assert abs(md.probs_1x2(M).sum() - 1) < 1e-9 and md.tasas_dc(dc, "T1_Eq1", "T1_Eq2", True)[0] < lam
         p_lr = md.predecir_lr(lr, pd.DataFrame([est.features("T1_Eq1", "T1_Eq2", df["Date"].max())])[FEATS])
         assert abs(p_lr.sum() - 1) < 1e-9
+        # Verifica resumen de selecciones de bajo riesgo (2 a 3 opciones de distintas categorías)
+        mk = md.mercados_goles(M)
+        s_1x2_test = np.tile(md.probs_1x2(M), (50, 1))
+        picks = md.selecciones_bajo_riesgo("T1_Eq1", "T1_Eq2", md.probs_1x2(M), s_1x2_test, mk, [mk] * 50)
+        assert 2 <= len(picks) <= 3 and all(p["Probabilidad"] >= 0.58 for p in picks)
 
         # Modo europeo entre ligas
         df2 = db.cargar_partidos("T2", con)

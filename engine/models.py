@@ -176,3 +176,83 @@ def dispersion_nb(total, weights=None, min_muestras=15):
 def prob_over_nb(mu, r, lineas):
     p = r / (r + mu)
     return {l: float(1 - nbinom.cdf(math.floor(l), r, p)) for l in lineas}
+
+
+def selecciones_bajo_riesgo(home, away, p_fin, s_1x2, mk, s_mk, secundarios=None, basico=False, max_picks=3):
+    """Selecciona entre 2 y 3 mercados independientes con alta probabilidad y bajo riesgo (alto piso P10 en Monte Carlo).
+    Descarta cuotas triviales (>90%) salvo que no exista alternativa en esa familia, y diversifica por categoría."""
+    candidatos = []
+
+    def agregar(familia, nombre, prob, muestras, penalizacion=0.0):
+        prob = float(prob)
+        p10, p90 = float(np.percentile(muestras, 10)), float(np.percentile(muestras, 90))
+        # Penaliza opciones fuera del rango ideal [65%, 89%] para evitar mercados triviales (>90%) o muy riesgosos (<65%)
+        pen_rango = 0.0
+        if prob > 0.89:
+            pen_rango = (prob - 0.89) * 1.8
+        elif prob < 0.65:
+            pen_rango = (0.65 - prob) * 1.5
+        score = p10 - 0.25 * (p90 - p10) - penalizacion - pen_rango
+        if 0.58 <= prob <= 0.94:
+            if prob >= 0.76 and p10 >= 0.68:
+                riesgo = "🟢 Muy bajo"
+            elif prob >= 0.68 and p10 >= 0.60:
+                riesgo = "🟢 Bajo"
+            else:
+                riesgo = "🟡 Moderado-bajo"
+            candidatos.append({
+                "Selección": nombre,
+                "Categoría": familia,
+                "Probabilidad": prob,
+                "P10": p10,
+                "P90": p90,
+                "Cuota justa": round(1.0 / max(prob, 1e-6), 2),
+                "Riesgo": riesgo,
+                "_score": score,
+            })
+
+    # 1. Familia Resultado (1X2 y Doble Oportunidad)
+    agregar("Resultado", f"Gana {home}", p_fin[0], s_1x2[:, 0])
+    agregar("Resultado", f"Gana {away}", p_fin[2], s_1x2[:, 2])
+    etq_1x = f"{home} o Empate" if basico else f"1X ({home} o Empate)"
+    etq_x2 = f"{away} o Empate" if basico else f"X2 ({away} o Empate)"
+    etq_12 = f"{home} o {away} (sin empate)" if basico else f"12 ({home} o {away})"
+    agregar("Resultado", etq_1x, p_fin[0] + p_fin[1], s_1x2[:, 0] + s_1x2[:, 1])
+    agregar("Resultado", etq_x2, p_fin[1] + p_fin[2], s_1x2[:, 1] + s_1x2[:, 2])
+    agregar("Resultado", etq_12, p_fin[0] + p_fin[2], s_1x2[:, 0] + s_1x2[:, 2])
+
+    # 2. Familia Goles (Over / Under)
+    for k, etq in (("Over 1.5", "Over 1.5 goles"), ("Over 2.5", "Over 2.5 goles"),
+                   ("Under 2.5", "Under 2.5 goles"), ("Under 3.5", "Under 3.5 goles")):
+        agregar("Goles", etq, mk[k], [m[k] for m in s_mk])
+
+    # 3. Familia Ambos Marcan (solo modo completo)
+    if not basico:
+        agregar("Ambos marcan", "Ambos marcan (Sí)", mk["Ambos marcan (BTTS)"], [m["Ambos marcan (BTTS)"] for m in s_mk], 0.01)
+        agregar("Ambos marcan", "Ambos marcan (No)", mk["No BTTS"], [m["No BTTS"] for m in s_mk], 0.01)
+
+    # 4. Familia Estadísticas secundarias (córners, tiros, amarillas - solo modo completo)
+    if not basico and secundarios:
+        for item in secundarios:
+            agregar(item["familia"], item["nombre"], item["prob"], item["muestras"], penalizacion=0.03)
+
+    # Elegir máximo 1 por categoría (el de mayor _score) para no repetir mercados correlacionados
+    mejores_por_cat = {}
+    for c in candidatos:
+        cat = c["Categoría"]
+        if cat not in mejores_por_cat or c["_score"] > mejores_por_cat[cat]["_score"]:
+            mejores_por_cat[cat] = c
+
+    seleccionados = sorted(mejores_por_cat.values(), key=lambda x: x["_score"], reverse=True)[:max_picks]
+    # Si solo hay 1 categoría (ej. modo básico tiene Resultado y Goles, o si falta un 3ro), permitir un 2do de otra línea distinta
+    if len(seleccionados) < 2 and len(candidatos) >= 2:
+        usados = {s["Selección"] for s in seleccionados}
+        for c in sorted(candidatos, key=lambda x: x["_score"], reverse=True):
+            if c["Selección"] not in usados:
+                seleccionados.append(c)
+                if len(seleccionados) >= 2:
+                    break
+
+    for s in seleccionados:
+        s.pop("_score", None)
+    return seleccionados

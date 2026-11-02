@@ -119,7 +119,8 @@ BRASIL = "🇧🇷 Brasil"
 def test_modo_completo():
     _, t = correr({"🏆 Liga (ranking y backtest)": PREMIER})
     for esperado in ["Goles", "Comparación de modelos", "Marcadores más probables", "Córners y", "Faltas y tarjetas por equipo",
-                     "Faltas", "Amarillas", "Rojas", "P(≥1 roja)", "Over 22.5", "Over 3.5 %"]:
+                     "Faltas", "Amarillas", "Rojas", "P(≥1 roja)", "Over 22.5", "Over 3.5 %",
+                     "Opciones más probables y de bajo riesgo"]:
         assert esperado in t, f"falta en modo completo: {esperado}"
 
 
