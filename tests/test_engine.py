@@ -193,6 +193,7 @@ def test_motor():
             df["Date"].max(),
         )
         assert scan_multi["combinada"] is not None and scan_multi["triple"] is not None
+        assert scan_multi["picante"] is not None and scan_multi["picante"]["Cuota justa combinada"] >= 5.0
 
         # Modo europeo entre ligas
         df2 = db.cargar_partidos("T2", con)

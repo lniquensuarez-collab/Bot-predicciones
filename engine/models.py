@@ -478,6 +478,42 @@ def escanear_jornada(partidos, P_liga, fecha, w_dc=0.6, sigma=0.12, basico=False
         if not picks:
             continue
         mejor = picks[0]
+
+        # Candidatos para el armador "Picante (Cuota >= 5.0)" de este partido
+        cands_pic = [
+            {"sel": p["Selección"], "p": float(p["Probabilidad"]), "p10": float(p["P10"])}
+            for p in picks
+        ]
+        cands_pic.extend([
+            {"sel": f"Gana {h}", "p": float(p_fin[0]), "p10": float(np.percentile(s_1x2[:, 0], 10))},
+            {"sel": f"Gana {a}", "p": float(p_fin[2]), "p10": float(np.percentile(s_1x2[:, 2], 10))},
+            {"sel": "Over 2.5 goles", "p": float(mk["Over 2.5"]), "p10": float(np.percentile([m["Over 2.5"] for m in s_mk], 10))},
+            {"sel": "Over 3.5 goles", "p": float(mk["Over 3.5"]), "p10": float(np.percentile([m["Over 3.5"] for m in s_mk], 10))},
+            {"sel": "Under 2.5 goles", "p": float(mk["Under 2.5"]), "p10": float(np.percentile([m["Under 2.5"] for m in s_mk], 10))},
+        ])
+        if float(p_fin[1]) >= 0.26:
+            cands_pic.append({"sel": "Empate (X)", "p": float(p_fin[1]), "p10": float(np.percentile(s_1x2[:, 1], 10))})
+        if not basico:
+            ratio_h = float(p_fin[0]) / max(float(p_dc[0]), 1e-6)
+            ratio_a = float(p_fin[2]) / max(float(p_dc[2]), 1e-6)
+            p_ho15 = float(np.clip((np.tril(M, -1).sum() - M[1, 0]) * ratio_h, 0.01, 0.92))
+            p_ho25 = float(np.clip((np.tril(M, -1).sum() - M[1, 0] - M[2, 0]) * ratio_h, 0.01, 0.90))
+            p_ao15 = float(np.clip((np.triu(M, 1).sum() - M[0, 1]) * ratio_a, 0.01, 0.92))
+            p_ao25 = float(np.clip((np.triu(M, 1).sum() - M[0, 1] - M[0, 2]) * ratio_a, 0.01, 0.90))
+            cands_pic.extend([
+                {"sel": "Ambos marcan (Sí)", "p": float(mk["Ambos marcan (BTTS)"]),
+                 "p10": float(np.percentile([m["Ambos marcan (BTTS)"] for m in s_mk], 10))},
+                {"sel": f"Gana {h} + Over 1.5 goles", "p": p_ho15, "p10": p_ho15 * 0.88},
+                {"sel": f"Gana {h} + Over 2.5 goles", "p": p_ho25, "p10": p_ho25 * 0.86},
+                {"sel": f"Gana {a} + Over 1.5 goles", "p": p_ao15, "p10": p_ao15 * 0.88},
+                {"sel": f"Gana {a} + Over 2.5 goles", "p": p_ao25, "p10": p_ao25 * 0.86},
+            ])
+        vistos_pic = {}
+        for cp in cands_pic:
+            if 0.18 <= cp["p"] <= 0.88 and cp["sel"] not in vistos_pic:
+                vistos_pic[cp["sel"]] = cp
+        opciones_pic = sorted(vistos_pic.values(), key=lambda x: x["p"], reverse=True)
+
         fila = {}
         if nom_liga:
             fila["Liga"] = nom_liga
@@ -494,11 +530,13 @@ def escanear_jornada(partidos, P_liga, fecha, w_dc=0.6, sigma=0.12, basico=False
             "_p": mejor["Probabilidad"],
             "_p10": mejor["P10"],
             "_trampa": cons["es_trampa"],
+            "_pic": opciones_pic,
         })
         filas.append(fila)
 
     filas.sort(key=lambda x: (not x["_trampa"], x["_p10"], x["_p"]), reverse=True)
-    combinada, triple = None, None
+    combinada, triple, picante = None, None, None
+    picantes = []
     no_trampa = [x for x in filas if not x["_trampa"]]
     aptos_doble = no_trampa if len(no_trampa) >= 2 else filas
     if len(aptos_doble) >= 2:
@@ -527,7 +565,89 @@ def escanear_jornada(partidos, P_liga, fecha, w_dc=0.6, sigma=0.12, basico=False
             "Cuota justa combinada": round(1.0 / max(p_tri, 1e-6), 2),
             "Cuota con valor (EV≥2%)": round(1.02 / max(p_tri, 1e-6), 2),
         }
+
+    # --- Armador "El Picante del Día" (Cuota objetivo >= 5.00 para probar suerte) ---
+    base_pic = no_trampa if len(no_trampa) >= 2 else filas
+    if len(base_pic) >= 2:
+        def _formatear_picante(titulo, elegidos):
+            p_tot = float(np.prod([e["p"] for e in elegidos]))
+            p10_tot = float(np.prod([e["p10"] for e in elegidos]))
+            cuota_tot = round(1.0 / max(p_tot, 1e-6), 2)
+            return {
+                "Título": titulo,
+                "Cantidad de partidos": len(elegidos),
+                "Selecciones": [
+                    f"{e['partido']}: {e['sel']} ({e['p'] * 100:.1f}% · cuota ~{1.0 / max(e['p'], 1e-6):.2f})"
+                    for e in elegidos
+                ],
+                "Probabilidad conjunta %": round(p_tot * 100.0, 1),
+                "Piso conjunto (P10) %": round(p10_tot * 100.0, 1),
+                "Cuota justa combinada": cuota_tot,
+                "Multiplicador x10": round(cuota_tot * 10.0, 1),
+            }
+
+        # Estrategia A: Escalera acumulativa (empieza con las más seguras y sube cuota si faltan partidos para llegar a 5.0+)
+        esc = [{"partido": f["Partido"], "sel": f["Mejor selección"], "p": f["_p"], "p10": f["_p10"], "opts": f["_pic"]}
+               for f in base_pic]
+        acum = []
+        p_acum = 1.0
+        for item in esc:
+            acum.append({"partido": item["partido"], "sel": item["sel"], "p": item["p"], "p10": item["p10"], "opts": item["opts"]})
+            p_acum *= item["p"]
+            if 1.0 / max(p_acum, 1e-6) >= 5.0:
+                break
+        # Si aún no llega a cuota 5.0 (porque hay pocos partidos), subir escalonadamente a mercados más picantes en esos partidos
+        for _ in range(30):
+            if 1.0 / max(float(np.prod([x["p"] for x in acum])), 1e-6) >= 5.0:
+                break
+            mejor_salto = None
+            for idx, item in enumerate(acum):
+                for op in item["opts"]:
+                    if op["p"] < item["p"] - 0.01:
+                        nuevo_p = float(np.prod([x["p"] for j, x in enumerate(acum) if j != idx])) * op["p"]
+                        # Preferir el cambio más suave que acerque o supere cuota 5.0 con el mayor producto de probabilidad
+                        if mejor_salto is None or op["p"] / item["p"] > mejor_salto[2]:
+                            mejor_salto = (idx, op, op["p"] / item["p"], nuevo_p)
+                        break
+            if mejor_salto is None:
+                break
+            idx_s, op_s, _, _ = mejor_salto
+            acum[idx_s]["sel"] = op_s["sel"]
+            acum[idx_s]["p"] = op_s["p"]
+            acum[idx_s]["p10"] = op_s["p10"]
+
+        if 1.0 / max(float(np.prod([x["p"] for x in acum])), 1e-6) >= 5.0:
+            picantes.append(_formatear_picante("🌶️ Escalera Picante (Máxima probabilidad para Cuota 5.0+)", acum))
+
+        # Estrategia B: Bomba Express de 2 o 3 partidos (cuotas medias-altas combinadas >= 5.0)
+        top_m = base_pic[:min(len(base_pic), 6)]
+        mejor_bomba = None
+        for n_legs in (2, 3):
+            if len(top_m) < n_legs:
+                continue
+            from itertools import combinations, product
+            for idxs in combinations(range(len(top_m)), n_legs):
+                listas_ops = [
+                    [{"partido": top_m[i]["Partido"], "sel": op["sel"], "p": op["p"], "p10": op["p10"]}
+                     for op in top_m[i]["_pic"][:6]]
+                    for i in idxs
+                ]
+                for combo in product(*listas_ops):
+                    p_c = float(np.prod([c["p"] for c in combo]))
+                    cuota_c = 1.0 / max(p_c, 1e-6)
+                    if 5.0 <= cuota_c <= 14.0:
+                        if mejor_bomba is None or p_c > mejor_bomba[0]:
+                            mejor_bomba = (p_c, list(combo))
+        if mejor_bomba is not None:
+            cand_b = _formatear_picante("💣 Bomba Express (Pocos partidos · Cuota 5.0+)", mejor_bomba[1])
+            if not picantes or cand_b["Selecciones"] != picantes[0]["Selecciones"]:
+                picantes.append(cand_b)
+
+        if picantes:
+            picante = picantes[0]
+
     for x in filas:
-        for k in ("_p", "_p10", "_trampa"):
+        for k in ("_p", "_p10", "_trampa", "_pic"):
             x.pop(k, None)
-    return {"ranking": pd.DataFrame(filas), "combinada": combinada, "triple": triple}
+    return {"ranking": pd.DataFrame(filas), "combinada": combinada, "triple": triple,
+            "picante": picante, "picantes": picantes}

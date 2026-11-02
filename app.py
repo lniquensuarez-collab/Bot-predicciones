@@ -662,6 +662,26 @@ with tab_comb:
                 st.markdown("#### 📊 Ranking de Seguridad de Todos los Partidos")
                 st.caption("Ordenados del más seguro al más riesgoso. Los marcados como 🔴 Partido Trampa se excluyen de las combinadas.")
                 st.dataframe(res_scan["ranking"], use_container_width=True, hide_index=True)
+
+            # ---- Sección final apartada: El Picante del Día (Cuota >= 5.00 para probar suerte) ----
+            lista_pic = res_scan.get("picantes") or ([res_scan["picante"]] if res_scan.get("picante") else [])
+            if lista_pic:
+                st.divider()
+                st.markdown("#### 🌶️ Zona Picante: El Boleto de Cuota 5.00+ (Probar Suerte / Cash Rápido)")
+                st.caption("🎲 **Juego recreativo totalmente apartado del modelo conservador:** combina selecciones de los partidos "
+                           "analizados (sin importar la cantidad de partidos necesarios o usando mercados combinados de goles + ganador) "
+                           "buscando superar la barrera de **Cuota 5.00** con la mejor probabilidad matemática disponible. "
+                           "Úsalo solo con un monto pequeño de diversión (*lotería deportiva*).")
+                for bp in lista_pic:
+                    lineas_sel = "  \n".join(f"• {s}" for s in bp["Selecciones"])
+                    st.warning(
+                        f"**{bp['Título']} ({bp['Cantidad de partidos']} partidos)**  \n"
+                        f"{lineas_sel}  \n"
+                        f"🔥 **Cuota justa combinada:** `{bp['Cuota justa combinada']:.2f}` "
+                        f"*(Ej.: apostando 10 unidades → retorno potencial de `{bp['Multiplicador x10']:.1f}` unidades)* · "
+                        f"**Probabilidad conjunta:** `{bp['Probabilidad conjunta %']:.1f}%` "
+                        f"(Piso Monte Carlo P10: `{bp['Piso conjunto (P10) %']:.1f}%`)"
+                    )
     else:
         st.info("Pulsa **🔎 Buscar partidos del día** arriba o abre **➕ Agregar partidos manualmente** para empezar.")
 
