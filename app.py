@@ -20,13 +20,14 @@ from engine import models as md
 
 # En Streamlit Cloud, al actualizar por Git sin reiniciar contenedor, recarga submódulos si quedaron en caché
 if (not hasattr(ft.Estado, "resumen_xg")
+        or not hasattr(_cfg, "TORNEOS_INTERNACIONALES")
         or not hasattr(md, "mercados_asiaticos")
         or not hasattr(bt, "simular_apuestas")
-        or not hasattr(data_bot, "buscar_partidos_del_dia")):
+        or not hasattr(data_bot, "resolver_equipo_internacional")):
     for _mod in (_cfg, _elo, db, data_bot, ft, md, bt):
         importlib.reload(_mod)
 
-from engine.config import ELO_A_LOG, LIGAS
+from engine.config import ELO_A_LOG, EQUIPOS_INVITADOS, LIGAS, TORNEOS_INTERNACIONALES
 from engine.elo_system import prob_cruzada
 
 st.set_page_config(page_title="Ultimate AI V14", page_icon="⚽", layout="centered")
@@ -580,55 +581,106 @@ with tab_comb:
     fecha_jornada = pd.Timestamp(col_f1.date_input("📅 Fecha de los partidos a buscar", value=date.today(), key="f_comb"))
     ventana_dias = col_f2.selectbox("🗓️ Rango de búsqueda", [0, 1, 2, 3], index=0,
                                     format_func=lambda d: "Solo ese día" if d == 0 else f"Ese día + {d} día(s)")
-    ligas_busq = st.multiselect("🏆 Ligas donde buscar partidos del día", list(LIGAS), default=list(LIGAS), key="ligs_comb")
+    opciones_busq = list(LIGAS) + list(TORNEOS_INTERNACIONALES)
+    ligas_busq = st.multiselect("🏆 Ligas y Torneos Internacionales donde buscar partidos del día",
+                                opciones_busq, default=opciones_busq, key="ligs_comb")
 
     b_busq, b_limp = st.columns([3, 1])
     if b_busq.button("🔎 Buscar partidos del día", use_container_width=True):
-        with st.spinner("Buscando partidos programados en las ligas seleccionadas..."):
+        with st.spinner("Buscando partidos programados en las ligas y torneos internacionales..."):
             with db.sesion() as con:
                 fn_busq = getattr(data_bot, "buscar_partidos_del_dia", None)
                 hallados = fn_busq(con, fecha_jornada, ligas_busq, ventana_dias=ventana_dias) if callable(fn_busq) else []
         st.session_state["partidos_jornada"] = hallados
         if hallados:
-            st.success(f"✅ Se encontraron {len(hallados)} partido(s) en las ligas de la app.")
+            st.success(f"✅ Se encontraron {len(hallados)} partido(s) en las ligas y torneos seleccionados.")
         else:
-            st.warning("No se encontraron partidos programados en esa fecha para las ligas seleccionadas. "
+            st.warning("No se encontraron partidos programados en esa fecha para las competiciones seleccionadas. "
                        "Puedes probar ampliando el rango de días o agregar partidos manualmente abajo.")
 
     if b_limp.button("🗑️ Vaciar lista", use_container_width=True):
         st.session_state["partidos_jornada"] = []
 
-    with st.expander("➕ Agregar partidos manualmente a la lista (de cualquier liga)"):
-        lig_man = st.selectbox("Liga del partido", list(LIGAS), index=list(LIGAS).index(liga_principal), key="cm_liga")
-        cod_man = LIGAS[lig_man]["codigo"]
-        with db.sesion() as con:
-            eqs_man = data_bot.obtener_equipos_vigentes(con, cod_man)
-        if len(eqs_man) >= 2:
-            mc1, mc2, mc3 = st.columns([2, 2, 1])
-            mh = mc1.selectbox("Local", eqs_man, index=0, key="cm_h")
-            ma = mc2.selectbox("Visita", eqs_man, index=min(1, len(eqs_man) - 1), key="cm_a")
-            if mc3.button("➕ Añadir", use_container_width=True):
-                if mh != ma:
-                    nuevo = {"liga": lig_man, "codigo": cod_man, "fecha": fecha_jornada.strftime("%Y-%m-%d"),
-                             "local": mh, "visita": ma, "fuente": "manual"}
-                    if not any(p["codigo"] == cod_man and p["local"] == mh and p["visita"] == ma
-                               for p in st.session_state["partidos_jornada"]):
-                        st.session_state["partidos_jornada"].append(nuevo)
+    with st.expander("➕ Agregar partidos manualmente a la lista (ligas domésticas, Champions, Libertadores o clubes invitados)"):
+        es_int_man = st.checkbox("🌐 Cruce internacional / entre distintas ligas o club invitado (Champions, Libertadores, etc.)",
+                                 value=False, key="cm_int")
+        if not es_int_man:
+            lig_man = st.selectbox("Liga del partido", list(LIGAS), index=list(LIGAS).index(liga_principal), key="cm_liga")
+            cod_man = LIGAS[lig_man]["codigo"]
+            with db.sesion() as con:
+                eqs_man = data_bot.obtener_equipos_vigentes(con, cod_man)
+            if len(eqs_man) >= 2:
+                mc1, mc2, mc3 = st.columns([2, 2, 1])
+                mh = mc1.selectbox("Local", eqs_man, index=0, key="cm_h")
+                ma = mc2.selectbox("Visita", eqs_man, index=min(1, len(eqs_man) - 1), key="cm_a")
+                if mc3.button("➕ Añadir", use_container_width=True):
+                    if mh != ma:
+                        nuevo = {"liga": lig_man, "codigo": cod_man, "codigo_a": cod_man,
+                                 "fecha": fecha_jornada.strftime("%Y-%m-%d"),
+                                 "local": mh, "visita": ma, "fuente": "manual"}
+                        if not any(p.get("codigo") == cod_man and p["local"] == mh and p["visita"] == ma
+                                   for p in st.session_state["partidos_jornada"]):
+                            st.session_state["partidos_jornada"].append(nuevo)
+                    else:
+                        st.warning("Elige dos equipos distintos.")
+        else:
+            ETQ_INV = "🌐 Club Invitado UEFA / CONMEBOL (Otras ligas)"
+            torneo_etq = st.selectbox("Torneo internacional", list(TORNEOS_INTERNACIONALES), key="cm_torneo")
+            ic1, ic2 = st.columns(2)
+            orig_h = ic1.selectbox("Origen del Local", list(LIGAS) + [ETQ_INV], index=0, key="cm_orig_h")
+            orig_a = ic2.selectbox("Origen de la Visita", list(LIGAS) + [ETQ_INV], index=min(1, len(LIGAS)), key="cm_orig_a")
+            with db.sesion() as con:
+                if orig_h == ETQ_INV:
+                    eqs_ih = sorted(EQUIPOS_INVITADOS.keys())
+                    cod_ih = "EXT"
                 else:
-                    st.warning("Elige dos equipos distintos.")
+                    cod_ih = LIGAS[orig_h]["codigo"]
+                    eqs_ih = data_bot.obtener_equipos_vigentes(con, cod_ih)
+                if orig_a == ETQ_INV:
+                    eqs_ia = sorted(EQUIPOS_INVITADOS.keys())
+                    cod_ia = "EXT"
+                else:
+                    cod_ia = LIGAS[orig_a]["codigo"]
+                    eqs_ia = data_bot.obtener_equipos_vigentes(con, cod_ia)
+            if eqs_ih and eqs_ia:
+                mc1, mc2, mc3 = st.columns([2, 2, 1])
+                mh = mc1.selectbox("Local (Internacional)", eqs_ih, index=0, key="cm_ih")
+                ma = mc2.selectbox("Visita (Internacional)", eqs_ia, index=min(1, len(eqs_ia) - 1), key="cm_ia")
+                if mc3.button("➕ Añadir cruce", use_container_width=True):
+                    if mh != ma or cod_ih != cod_ia:
+                        elo_eh = EQUIPOS_INVITADOS[mh]["elo"] if cod_ih == "EXT" and mh in EQUIPOS_INVITADOS else None
+                        elo_ea = EQUIPOS_INVITADOS[ma]["elo"] if cod_ia == "EXT" and ma in EQUIPOS_INVITADOS else None
+                        nuevo = {
+                            "liga": torneo_etq,
+                            "codigo": cod_ih,
+                            "codigo_a": cod_ia,
+                            "fecha": fecha_jornada.strftime("%Y-%m-%d"),
+                            "local": mh,
+                            "visita": ma,
+                            "elo_ext_h": elo_eh,
+                            "elo_ext_a": elo_ea,
+                            "fuente": "manual-int",
+                        }
+                        st.session_state["partidos_jornada"].append(nuevo)
+                    else:
+                        st.warning("Elige dos equipos distintos.")
 
     lista_actual = st.session_state["partidos_jornada"]
     if lista_actual:
         st.markdown(f"**📋 Partidos cargados para escanear ({len(lista_actual)}):**")
         df_prev = pd.DataFrame([
-            {"Fecha": p.get("fecha", ""), "Liga": p.get("liga", ""), "Local": p["local"],
+            {"Fecha": p.get("fecha", ""), "Liga / Torneo": p.get("liga", ""), "Local": p["local"],
              "Visita": p["visita"], "Origen": p.get("fuente", "")}
             for p in lista_actual
         ])
         st.dataframe(df_prev, use_container_width=True, hide_index=True)
 
         if st.button("📊 ANALIZAR PARTIDOS Y ARMAR COMBINADAS", use_container_width=True):
-            cods_unicos = sorted({p["codigo"] for p in lista_actual if "codigo" in p})
+            cods_unicos = sorted({
+                c for p in lista_actual
+                for c in (p.get("codigo"), p.get("codigo_a"))
+                if c and c != "EXT"
+            })
             mapa_ligas = {}
             for cod_u in cods_unicos:
                 mapa_ligas[cod_u] = (P_main if cod_u == LIGAS[liga_principal]["codigo"]

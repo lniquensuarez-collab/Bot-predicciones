@@ -10,6 +10,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
+from .config import ELO_A_LOG, EQUIPOS_INVITADOS, LIGAS
+from .elo_system import prob_cruzada
 from .features import FEATS
 
 MAX_GOLES = 8
@@ -425,51 +427,85 @@ def selecciones_bajo_riesgo(home, away, p_fin, s_1x2, mk, s_mk, secundarios=None
 
 
 def escanear_jornada(partidos, P_liga, fecha, w_dc=0.6, sigma=0.12, basico=False):
-    """Evalúa múltiples cruces [(local, visita), ...] o dicts multiliga [{'codigo', 'liga', 'local', 'visita'}, ...],
-    los ordena de menor a mayor riesgo y construye las mejores Combinadas Doble (2) y Triple (3)."""
+    """Evalúa múltiples cruces [(local, visita), ...] o dicts multiliga/internacionales
+    [{'codigo', 'codigo_a', 'liga', 'local', 'visita', 'elo_ext_h', 'elo_ext_a'}, ...],
+    los ordena de menor a mayor riesgo y construye las mejores Combinadas Doble (2), Triple (3) y Picante (5.0+)."""
     es_multiliga = isinstance(P_liga, dict) and "estado" not in P_liga
+    mapa_fuerza = {v["codigo"]: float(v.get("fuerza", 0.0)) for v in LIGAS.values()}
     rng = np.random.default_rng(42)
     filas = []
+
+    def _resolver_lado(eq, cod, elo_ext):
+        P_eq = P_liga.get(cod) if es_multiliga else P_liga
+        if cod and cod != "EXT" and P_eq is not None:
+            return (P_eq["dc"], P_eq["estado"].elo.rating(eq),
+                    mapa_fuerza.get(cod, 0.0), P_eq["estado"].n.get(eq, 20), False)
+        elo_ef = float(elo_ext or EQUIPOS_INVITADOS.get(eq, {}).get("elo") or (1500.0 + mapa_fuerza.get(cod, -120.0)))
+        dc_virt = {"att": {eq: 0.0}, "dfn": {eq: 0.0}, "ha": 0.22, "rho": -0.08, "c": 0.18}
+        return dc_virt, 1500.0, elo_ef - 1500.0, 14, True
 
     for item in partidos:
         if isinstance(item, dict):
             h, a = item["local"], item["visita"]
-            cod = item.get("codigo")
-            nom_liga = item.get("liga", cod or "")
-            P_actual = P_liga.get(cod) if es_multiliga else P_liga
+            cod_h = item.get("codigo")
+            cod_a = item.get("codigo_a") or cod_h
+            nom_liga = item.get("liga", cod_h or "")
+            elo_ext_h = item.get("elo_ext_h")
+            elo_ext_a = item.get("elo_ext_a")
             f_partido = pd.Timestamp(item.get("fecha", fecha))
         else:
             h, a = item
+            cod_h = cod_a = None
             nom_liga = ""
-            P_actual = P_liga
+            elo_ext_h = elo_ext_a = None
             f_partido = pd.Timestamp(fecha)
 
-        if h == a or P_actual is None:
+        if h == a:
             continue
-        est, dc, lr, df = P_actual["estado"], P_actual["dc"], P_actual["lr"], P_actual["df"]
-        tasa_emp = float((df["FTR"] == "D").mean())
-        lam, mu = tasas_dc(dc, h, a, False)
-        rho = dc["rho"]
-        M = matriz(lam, mu, rho)
-        p_dc = probs_1x2(M)
-        p_elo = est.elo.prob_1x2(h, a, False, tasa_empate=tasa_emp)
-        f = est.features(h, a, f_partido)
-        p_lr = predecir_lr(lr, pd.DataFrame([f])[FEATS])[0]
-        p_fin = w_dc * p_dc + (1.0 - w_dc) * p_lr
 
-        n_h, n_a = est.n.get(h, 0), est.n.get(a, 0)
-        cons = diagnosticar_consenso(p_dc, p_elo, p_lr, n_h, n_a)
+        P_actual = (P_liga.get(cod_h) if es_multiliga else P_liga) if cod_h == cod_a and cod_h != "EXT" else None
+        es_cruzado = (cod_h != cod_a) or (cod_h == "EXT") or (cod_a == "EXT") or (P_actual is None and es_multiliga)
+
+        if not es_cruzado:
+            if P_actual is None:
+                continue
+            est, dc, lr, df = P_actual["estado"], P_actual["dc"], P_actual["lr"], P_actual["df"]
+            tasa_emp = float((df["FTR"] == "D").mean())
+            lam, mu = tasas_dc(dc, h, a, False)
+            rho = dc["rho"]
+            M = matriz(lam, mu, rho)
+            p_dc = probs_1x2(M)
+            p_elo = est.elo.prob_1x2(h, a, False, tasa_empate=tasa_emp)
+            f = est.features(h, a, f_partido)
+            p_lr = predecir_lr(lr, pd.DataFrame([f])[FEATS])[0]
+            p_sec = p_lr
+            p_fin = w_dc * p_dc + (1.0 - w_dc) * p_sec
+            n_h, n_a = est.n.get(h, 0), est.n.get(a, 0)
+            cons = diagnosticar_consenso(p_dc, p_elo, p_lr, n_h, n_a)
+            sigma_ef = sigma
+        else:
+            dc_h, elo_h, fz_h, n_h, inv_h = _resolver_lado(h, cod_h, elo_ext_h)
+            dc_a, elo_a, fz_a, n_a, inv_a = _resolver_lado(a, cod_a, elo_ext_a)
+            lam, mu, rho = tasas_cruzadas(dc_h, dc_a, h, a, fz_h * ELO_A_LOG, fz_a * ELO_A_LOG, False)
+            M = matriz(lam, mu, rho)
+            p_dc = probs_1x2(M)
+            p_elo = prob_cruzada(elo_h, elo_a, fz_h, fz_a, False)
+            p_sec = p_elo
+            p_fin = w_dc * p_dc + (1.0 - w_dc) * p_sec
+            cons = diagnosticar_consenso(p_dc, p_elo, None, max(n_h, 12), max(n_a, 12))
+            sigma_ef = sigma + (0.04 if (inv_h or inv_a) else 0.015)
+
         f_h = float(np.clip(math.sqrt(38.0 / max(n_h, 5)), 0.7, 2.0))
         f_a = float(np.clip(math.sqrt(38.0 / max(n_a, 5)), 0.7, 2.0))
-        s_lam = sigma * math.sqrt(0.7 * f_h**2 + 0.3 * f_a**2)
-        s_mu = sigma * math.sqrt(0.7 * f_a**2 + 0.3 * f_h**2)
+        s_lam = sigma_ef * math.sqrt(0.7 * f_h**2 + 0.3 * f_a**2)
+        s_mu = sigma_ef * math.sqrt(0.7 * f_a**2 + 0.3 * f_h**2)
 
         s_1x2, s_mk = [], []
         for _ in range(200):
             pl = lam * math.exp(rng.normal(-0.5 * s_lam**2, s_lam))
             pm = mu * math.exp(rng.normal(-0.5 * s_mu**2, s_mu))
             Ms = matriz(pl, pm, rho)
-            s_1x2.append(w_dc * probs_1x2(Ms) + (1.0 - w_dc) * p_lr)
+            s_1x2.append(w_dc * probs_1x2(Ms) + (1.0 - w_dc) * p_sec)
             s_mk.append(mercados_goles(Ms))
         s_1x2 = np.array(s_1x2)
         mk = mercados_goles(M)

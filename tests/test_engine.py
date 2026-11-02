@@ -40,7 +40,8 @@ def sinteticos(codigo, n=700, seed=0, c0=0.30, ha0=0.20):
 
 def test_catalogo():
     assert {c["codigo"] for c in LIGAS.values()} == {
-        "E0", "E1", "D1", "SP1", "I1", "F1", "P1", "T1", "BRA", "ARG", "JPN", "CHN", "USA"
+        "E0", "E1", "D1", "SP1", "I1", "F1", "P1", "N1", "B1", "T1", "SC0", "G1",
+        "BRA", "ARG", "JPN", "CHN", "USA",
     }
     assert all(c["fuente"] in ("csv", "xlsx") for c in LIGAS.values())
 
@@ -188,12 +189,15 @@ def test_motor():
         scan_multi = md.escanear_jornada(
             [{"liga": "Turquía", "codigo": "T1", "local": "T1_Eq1", "visita": "T1_Eq2"},
              {"liga": "Turquía", "codigo": "T1", "local": "T1_Eq3", "visita": "T1_Eq4"},
-             {"liga": "Turquía", "codigo": "T1", "local": "T1_Eq5", "visita": "T1_Eq6"}],
+             {"liga": "🇪🇺 UEFA Champions League", "codigo": "T1", "codigo_a": "EXT",
+              "local": "T1_Eq5", "visita": "Shakhtar Donetsk", "elo_ext_a": 1485}],
             {"T1": {"estado": est, "dc": dc, "lr": lr, "df": df}},
             df["Date"].max(),
         )
         assert scan_multi["combinada"] is not None and scan_multi["triple"] is not None
         assert scan_multi["picante"] is not None and scan_multi["picante"]["Cuota justa combinada"] >= 5.0
+        res_int = data_bot.resolver_equipo_internacional("Red Bull Salzburg", {"T1": ["T1_Eq1"]})
+        assert res_int["invitado"] and res_int["equipo"] == "RB Salzburg" and res_int["elo_ext"] > 1400
 
         # Modo europeo entre ligas
         df2 = db.cargar_partidos("T2", con)

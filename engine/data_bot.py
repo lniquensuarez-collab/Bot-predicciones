@@ -12,8 +12,10 @@ import requests
 
 from . import db
 from .config import (
+    EQUIPOS_INVITADOS,
     ESPN_SLUGS,
     LIGAS,
+    TORNEOS_INTERNACIONALES,
     UNDERSTAT_SLUGS,
     URL_CSV,
     URL_ESPN_SCOREBOARD,
@@ -306,6 +308,26 @@ ALIAS_EQUIPOS = {
     "sporting cp": "Sp Lisbon",
     "sporting braga": "Sp Braga",
     "vitoria guimaraes": "Guimaraes",
+    "psv eindhoven": "PSV Eindhoven",
+    "feyenoord rotterdam": "Feyenoord",
+    "az alkmaar": "AZ Alkmaar",
+    "twente": "Twente",
+    "ajax amsterdam": "Ajax",
+    "club brugge": "Club Brugge",
+    "union saint gilloise": "St. Gilloise",
+    "royale union sg": "St. Gilloise",
+    "anderlecht": "Anderlecht",
+    "krc genk": "Genk",
+    "kaa gent": "Gent",
+    "olympiacos": "Olympiakos",
+    "paok salonika": "PAOK",
+    "aek athens": "AEK",
+    "panathinaikos": "Panathinaikos",
+    "glasgow rangers": "Rangers",
+    "celtic glasgow": "Celtic",
+    "red bull salzburg": "RB Salzburg",
+    "salzburg": "RB Salzburg",
+    "red star belgrade": "Crvena Zvezda",
 }
 
 
@@ -318,7 +340,7 @@ def _norm_nombre(s):
     )
 
 
-def _emparejar_equipo(nombre_ext, equipos_db):
+def _emparejar_equipo(nombre_ext, equipos_db, cutoff=0.58):
     """Empareja el nombre de un equipo externo (fixtures/ESPN) con el nombre exacto en nuestra BD."""
     if not nombre_ext or not equipos_db:
         return None
@@ -332,19 +354,55 @@ def _emparejar_equipo(nombre_ext, equipos_db):
         return mapa_norm[n_ext]
     # Subcadena o token principal
     for k_norm, orig in mapa_norm.items():
-        if k_norm in n_ext or n_ext in k_norm:
+        if len(k_norm) >= 4 and (k_norm in n_ext or n_ext in k_norm):
             return orig
-    cercanos = difflib.get_close_matches(n_ext, list(mapa_norm.keys()), n=1, cutoff=0.58)
+    cercanos = difflib.get_close_matches(n_ext, list(mapa_norm.keys()), n=1, cutoff=cutoff)
     return mapa_norm[cercanos[0]] if cercanos else None
 
 
+def resolver_equipo_internacional(nombre_ext, equipos_por_liga_total, elo_defecto=1400):
+    """Resuelve un equipo de Champions/Europa/Conference/Libertadores contra:
+    1) Todas las ligas domésticas cargadas en SQLite, 2) El catálogo EQUIPOS_INVITADOS, o 3) Arquetipo por defecto."""
+    n_ext = _norm_nombre(nombre_ext)
+    # 1. Buscar coincidencia exacta o por alias en todas las ligas domésticas
+    for cod, eqs in equipos_por_liga_total.items():
+        if not eqs:
+            continue
+        if nombre_ext in eqs:
+            return {"equipo": nombre_ext, "codigo": cod, "invitado": False, "elo_ext": None}
+        if n_ext in ALIAS_EQUIPOS and ALIAS_EQUIPOS[n_ext] in eqs:
+            return {"equipo": ALIAS_EQUIPOS[n_ext], "codigo": cod, "invitado": False, "elo_ext": None}
+        mapa_norm = {_norm_nombre(e): e for e in eqs}
+        if n_ext in mapa_norm:
+            return {"equipo": mapa_norm[n_ext], "codigo": cod, "invitado": False, "elo_ext": None}
+    # 2. Buscar subcadena o similitud alta (>=0.72) en ligas domésticas
+    for cod, eqs in equipos_por_liga_total.items():
+        m = _emparejar_equipo(nombre_ext, eqs, cutoff=0.72)
+        if m:
+            return {"equipo": m, "codigo": cod, "invitado": False, "elo_ext": None}
+    # 3. Buscar en el catálogo de EQUIPOS_INVITADOS (ligas pequeñas europeas y sudamericanas)
+    m_inv = _emparejar_equipo(nombre_ext, list(EQUIPOS_INVITADOS.keys()), cutoff=0.65)
+    if m_inv:
+        info = EQUIPOS_INVITADOS[m_inv]
+        return {"equipo": m_inv, "codigo": "EXT", "invitado": True,
+                "elo_ext": int(info["elo"]), "pais": info["pais"]}
+    # 4. Comodín automático para cualquier club nuevo o de fase previa
+    limpio = str(nombre_ext).strip()
+    return {"equipo": limpio, "codigo": "EXT", "invitado": True,
+            "elo_ext": int(elo_defecto), "pais": "Internacional"}
+
+
 def buscar_partidos_del_dia(con, fecha_obj, nombres_ligas=None, ventana_dias=0):
-    """Busca los partidos programados en la fecha indicada (y hasta +ventana_dias) para las ligas de la app.
-    Combina: 1) football-data.co.uk fixtures, 2) calendario diario público de ESPN y 3) base local SQLite."""
-    nombres_ligas = nombres_ligas or list(LIGAS)
+    """Busca los partidos programados en la fecha indicada (y hasta +ventana_dias) para las ligas y torneos internacionales.
+    Combina: 1) football-data.co.uk fixtures, 2) calendario diario público de ESPN (ligas + UEFA/CONMEBOL) y 3) base local SQLite."""
+    nombres_ligas = nombres_ligas or (list(LIGAS) + list(TORNEOS_INTERNACIONALES))
     cod_a_nombre = {LIGAS[n]["codigo"]: n for n in nombres_ligas if n in LIGAS}
+    torneos_sel = {n: TORNEOS_INTERNACIONALES[n] for n in nombres_ligas if n in TORNEOS_INTERNACIONALES}
     codigos = set(cod_a_nombre.keys())
-    equipos_por_liga = {c: obtener_equipos_vigentes(con, c) for c in codigos}
+
+    todos_cods = {v["codigo"] for v in LIGAS.values()}
+    equipos_por_liga_total = {c: obtener_equipos_vigentes(con, c) for c in todos_cods}
+    equipos_por_liga = {c: equipos_por_liga_total.get(c, []) for c in codigos}
 
     f_ini = pd.Timestamp(fecha_obj).normalize()
     f_fin = f_ini + pd.Timedelta(days=int(max(0, ventana_dias)))
@@ -358,13 +416,14 @@ def buscar_partidos_del_dia(con, fecha_obj, nombres_ligas=None, ventana_dias=0):
         a_db = _emparejar_equipo(a_raw, eqs)
         if not h_db or not a_db or h_db == a_db:
             return
-        clave = (cod, f_str, h_db, a_db)
+        clave = (cod, cod, f_str, h_db, a_db)
         if clave in vistos:
             return
         vistos.add(clave)
         encontrados.append({
             "liga": cod_a_nombre[cod],
             "codigo": cod,
+            "codigo_a": cod,
             "fecha": f_str,
             "local": h_db,
             "visita": a_db,
@@ -372,6 +431,30 @@ def buscar_partidos_del_dia(con, fecha_obj, nombres_ligas=None, ventana_dias=0):
             "cuota_e": _num(ce),
             "cuota_v": _num(cv),
             "fuente": fuente,
+        })
+
+    def _registrar_internacional(nom_torneo, cfg_t, f_str, h_raw, a_raw):
+        ih = resolver_equipo_internacional(h_raw, equipos_por_liga_total, elo_defecto=cfg_t["elo_base"])
+        ia = resolver_equipo_internacional(a_raw, equipos_por_liga_total, elo_defecto=cfg_t["elo_base"])
+        if ih["equipo"] == ia["equipo"]:
+            return
+        clave = (ih["codigo"], ia["codigo"], f_str, ih["equipo"], ia["equipo"])
+        if clave in vistos:
+            return
+        vistos.add(clave)
+        encontrados.append({
+            "liga": nom_torneo,
+            "codigo": ih["codigo"],
+            "codigo_a": ia["codigo"],
+            "fecha": f_str,
+            "local": ih["equipo"],
+            "visita": ia["equipo"],
+            "elo_ext_h": ih["elo_ext"],
+            "elo_ext_a": ia["elo_ext"],
+            "cuota_l": None,
+            "cuota_e": None,
+            "cuota_v": None,
+            "fuente": "torneo-int",
         })
 
     # 1. Consultar fixtures oficiales de football-data.co.uk (CSV europeo y ligas extra)
@@ -398,7 +481,7 @@ def buscar_partidos_del_dia(con, fecha_obj, nombres_ligas=None, ventana_dias=0):
         except Exception:
             pass
 
-    # 2. Consultar calendario diario público de ESPN para cubrir cualquier fecha del calendario
+    # 2. Consultar calendario diario público de ESPN (ligas domésticas + torneos internacionales UEFA/CONMEBOL)
     fechas_rango = pd.date_range(f_ini, f_fin, freq="D")
     for f_dia in fechas_rango:
         ymd = f_dia.strftime("%Y%m%d")
@@ -421,19 +504,35 @@ def buscar_partidos_del_dia(con, fecha_obj, nombres_ligas=None, ventana_dias=0):
             except Exception:
                 pass
 
+        for nom_torneo, cfg_t in torneos_sel.items():
+            try:
+                r = requests.get(URL_ESPN_SCOREBOARD.format(slug=cfg_t["slug"], ymd=ymd), headers=HEADERS, timeout=10)
+                if r.status_code != 200:
+                    continue
+                eventos = r.json().get("events", [])
+                for ev in eventos:
+                    comps = ev.get("competitions", [{}])[0].get("competitors", [])
+                    h_name = next((c.get("team", {}).get("name") for c in comps if c.get("homeAway") == "home"), None)
+                    a_name = next((c.get("team", {}).get("name") for c in comps if c.get("homeAway") == "away"), None)
+                    if h_name and a_name:
+                        _registrar_internacional(nom_torneo, cfg_t, f_iso, h_name, a_name)
+            except Exception:
+                pass
+
     # 3. Respaldo en base de datos local SQLite (útil sin red o al consultar una fecha ya registrada)
-    placeholders = ",".join("?" * len(codigos))
-    q_local = f"""
-        SELECT competicion, fecha, local, visita, cuota_l, cuota_e, cuota_v
-        FROM partidos
-        WHERE competicion IN ({placeholders}) AND fecha >= ? AND fecha <= ?
-        ORDER BY fecha, id
-    """
-    df_loc = pd.read_sql_query(
-        q_local, con, params=[*codigos, f_ini.strftime("%Y-%m-%d"), f_fin.strftime("%Y-%m-%d")]
-    )
-    for _, r in df_loc.iterrows():
-        _registrar(r["competicion"], r["fecha"], r["local"], r["visita"],
-                   r["cuota_l"], r["cuota_e"], r["cuota_v"], "base-local")
+    if codigos:
+        placeholders = ",".join("?" * len(codigos))
+        q_local = f"""
+            SELECT competicion, fecha, local, visita, cuota_l, cuota_e, cuota_v
+            FROM partidos
+            WHERE competicion IN ({placeholders}) AND fecha >= ? AND fecha <= ?
+            ORDER BY fecha, id
+        """
+        df_loc = pd.read_sql_query(
+            q_local, con, params=[*codigos, f_ini.strftime("%Y-%m-%d"), f_fin.strftime("%Y-%m-%d")]
+        )
+        for _, r in df_loc.iterrows():
+            _registrar(r["competicion"], r["fecha"], r["local"], r["visita"],
+                       r["cuota_l"], r["cuota_e"], r["cuota_v"], "base-local")
 
     return encontrados
