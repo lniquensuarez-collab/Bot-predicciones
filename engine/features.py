@@ -30,7 +30,29 @@ class Estado:
         self.elo = elo or EloSystem()
         self.ewma, self.n, self.pts, self.last = {}, {}, {}, {}
         self.g_sum, self.g_count = {}, {}  # Para promedios globales de la liga
+        self.ref_stats = {}                # Estadísticas acumuladas por árbitro
         self.temporada_actual = None
+
+    def arbitros_disponibles(self, min_partidos=3):
+        return sorted(k for k, v in self.ref_stats.items() if v["n"] >= min_partidos)
+
+    def factor_arbitro(self, arbitro, prior_n=10.0):
+        """Multiplicador bayesiano de rigor arbitral (faltas, amarillas, rojas) respecto a la media de la liga."""
+        if not arbitro or arbitro not in self.ref_stats:
+            return {"faltas": 1.0, "amarillas": 1.0, "rojas": 1.0, "partidos": 0}
+        st = self.ref_stats[arbitro]
+        out = {"partidos": int(st["n"])}
+        for clave, stat in (("faltas", "F"), ("amarillas", "Y"), ("rojas", "R")):
+            n_s = st[f"n_{stat}"]
+            tot_liga = self.g_sum.get(("H", stat), 0.0) + self.g_sum.get(("A", stat), 0.0)
+            cnt_liga = max(1, min(self.g_count.get(("H", stat), 0), self.g_count.get(("A", stat), 0)))
+            mu_liga = tot_liga / cnt_liga if cnt_liga > 0 else 0.0
+            if n_s > 0 and mu_liga > 1e-6:
+                media_arb = (st[stat] + prior_n * mu_liga) / (n_s + prior_n)
+                out[clave] = float(np.clip(media_arb / mu_liga, 0.65, 1.50))
+            else:
+                out[clave] = 1.0
+        return out
 
     def valor(self, t, lado, stat):
         """Combina EWMA específica de lado (H/A) con EWMA general del equipo (ALL) para reducir varianza."""
@@ -99,6 +121,17 @@ class Estado:
                 # Actualizar promedios globales
                 self.g_sum[(lado, s)] = self.g_sum.get((lado, s), 0.0) + v
                 self.g_count[(lado, s)] = self.g_count.get((lado, s), 0) + 1
+
+        ref = r.get("Referee") or r.get("arbitro")
+        if isinstance(ref, str) and ref.strip() and ref.strip().lower() != "nan":
+            ref = ref.strip()
+            rs = self.ref_stats.setdefault(ref, {"n": 0, "F": 0.0, "n_F": 0, "Y": 0.0, "n_Y": 0, "R": 0.0, "n_R": 0})
+            rs["n"] += 1
+            for s_k, c_h, c_a in (("F", "HF", "AF"), ("Y", "HY", "AY"), ("R", "HR", "AR")):
+                v_tot = _f(r, c_h) + _f(r, c_a)
+                if not np.isnan(v_tot):
+                    rs[s_k] += v_tot
+                    rs[f"n_{s_k}"] += 1
 
         self.elo.update(h, a, gl, gv)
         ph, pa = {"H": (3, 0), "D": (1, 1), "A": (0, 3)}[r["FTR"]]

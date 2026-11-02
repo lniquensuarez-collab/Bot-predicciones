@@ -178,7 +178,148 @@ def prob_over_nb(mu, r, lineas):
     return {l: float(1 - nbinom.cdf(math.floor(l), r, p)) for l in lineas}
 
 
-def selecciones_bajo_riesgo(home, away, p_fin, s_1x2, mk, s_mk, secundarios=None, basico=False, max_picks=3):
+def _resolver_linea_asiatica(M, diff_mat, linea):
+    """Evalúa una línea asiática (entera, .5, .25 o .75) sobre una matriz de diferencias diff_mat."""
+    frac = round((linea % 1.0 + 1.0) % 1.0, 2)
+    if frac in (0.25, 0.75):
+        g1, n1, p1 = _resolver_linea_asiatica(M, diff_mat, linea - 0.25)[:3]
+        g2, n2, p2 = _resolver_linea_asiatica(M, diff_mat, linea + 0.25)[:3]
+        gana, nula, pierde = 0.5 * (g1 + g2), 0.5 * (n1 + n2), 0.5 * (p1 + p2)
+    else:
+        s = diff_mat + linea
+        gana = float(M[s > 1e-9].sum())
+        nula = float(M[np.abs(s) <= 1e-9].sum())
+        pierde = float(M[s < -1e-9].sum())
+    exito_ef = gana / max(gana + pierde, 1e-6)
+    no_pierde = gana + nula
+    cuota = 1.0 + pierde / max(gana, 1e-6)
+    return gana, nula, pierde, exito_ef, no_pierde, cuota
+
+
+def mercados_asiaticos(M, p_fin=None, home="Local", away="Visita"):
+    """Calcula Draw No Bet (Empate No Acción), Hándicaps Asiáticos de resultado y Líneas de Goles Asiáticas."""
+    p = probs_1x2(M) if p_fin is None else np.asarray(p_fin, dtype=float)
+    idx = np.arange(M.shape[0])
+    D = np.subtract.outer(idx, idx)  # goles_local - goles_visita
+    G = np.add.outer(idx, idx)       # goles totales
+
+    filas_ah = []
+    # DNB (AH 0.0) usando probabilidades finales del ensemble
+    for eq, p_g, p_p in ((f"{home} DNB (AH 0.0)", p[0], p[2]), (f"{away} DNB (AH 0.0)", p[2], p[0])):
+        exito = float(p_g / max(p_g + p_p, 1e-6))
+        filas_ah.append({
+            "Mercado": eq,
+            "Gana %": float(p_g) * 100,
+            "Reembolso %": float(p[1]) * 100,
+            "No pierde %": float(p_g + p[1]) * 100,
+            "Éxito sin empate %": exito * 100,
+            "Cuota justa": round(1.0 / max(exito, 1e-6), 2),
+        })
+
+    # Hándicaps asiáticos de resultado desde la matriz M
+    for eq, mat_d, lns in ((home, D, [-1.0, -0.75, -0.5, -0.25, 0.25, 0.5]),
+                           (away, -D, [-0.5, -0.25, 0.25, 0.5, 0.75, 1.0])):
+        for h in lns:
+            gana, nula, _, exito_ef, no_pierde, cuota = _resolver_linea_asiatica(M, mat_d, h)
+            signo = f"+{h:g}" if h > 0 else f"{h:g}"
+            filas_ah.append({
+                "Mercado": f"{eq} AH {signo}",
+                "Gana %": gana * 100,
+                "Reembolso %": nula * 100,
+                "No pierde %": no_pierde * 100,
+                "Éxito sin empate %": exito_ef * 100,
+                "Cuota justa": round(min(cuota, 99.0), 2),
+            })
+
+    filas_goles = []
+    for tipo, mat_g, lns in (("Over", G, [1.75, 2.0, 2.25, 2.75, 3.0]),
+                             ("Under", -G, [2.0, 2.25, 2.75, 3.0, 3.25])):
+        for l in lns:
+            linea_eval = -l if tipo == "Over" else l
+            gana, nula, _, exito_ef, no_pierde, cuota = _resolver_linea_asiatica(M, mat_g, linea_eval)
+            filas_goles.append({
+                "Mercado": f"{tipo} {l:g} goles (asiático)",
+                "Gana %": gana * 100,
+                "Reembolso %": nula * 100,
+                "No pierde %": no_pierde * 100,
+                "Éxito efectivo %": exito_ef * 100,
+                "Cuota justa": round(min(cuota, 99.0), 2),
+            })
+
+    return {"handicap": pd.DataFrame(filas_ah).set_index("Mercado"),
+            "goles": pd.DataFrame(filas_goles).set_index("Mercado")}
+
+
+def calcular_kelly_ev(prob_media, prob_p25, cuota, fraccion=0.25, max_stake=5.0):
+    """Calcula Valor Esperado (EV%) y Stake sugerido (% de banca) con Kelly Fraccionario Conservador."""
+    p = float(prob_media)
+    p25 = float(prob_p25)
+    o = float(cuota)
+    if o <= 1.0 or np.isnan(p) or np.isnan(o):
+        return {"EV %": 0.0, "EV conservador %": 0.0, "Stake Kelly 1/4 %": 0.0, "Señal": "—"}
+    ev = (p * o - 1.0) * 100.0
+    ev_c = (p25 * o - 1.0) * 100.0
+    # Probabilidad prudente (50% estimación central + 50% percentil 25 de Monte Carlo)
+    p_prud = 0.5 * p + 0.5 * p25
+    kelly_puro = max(0.0, (p_prud * o - 1.0) / max(o - 1.0, 1e-6))
+    stake = min(float(max_stake), float(fraccion) * kelly_puro * 100.0)
+    if ev >= 5.0 and ev_c > 0.0:
+        senal = "🔥 Valor alto"
+    elif ev >= 1.5 and stake > 0.1:
+        senal = "✅ Valor positivo"
+    elif ev > -1.5:
+        senal = "⚪ Cuota justa (sin ventaja)"
+    else:
+        senal = "❌ Sin valor (EV negativo)"
+    return {"EV %": round(ev, 2), "EV conservador %": round(ev_c, 2),
+            "Stake Kelly 1/4 %": round(stake, 2), "Señal": senal}
+
+
+def diagnosticar_consenso(p_dc, p_elo, p_lr, n_h, n_a):
+    """Evalúa el acuerdo entre Dixon-Coles, Elo y el Clasificador para detectar 'Partidos Trampa'."""
+    modelos = [np.asarray(m, dtype=float) for m in (p_dc, p_elo, p_lr)
+               if m is not None and not np.any(np.isnan(m))]
+    if len(modelos) < 2:
+        return {"estado": "🟡 Modelo único", "spread_pp": 0.0, "es_trampa": False,
+                "mensaje": "Un solo modelo activo.", "penalizacion": 0.0}
+    mat = np.vstack(modelos)
+    spread_pp = float((mat.max(axis=0) - mat.min(axis=0)).max() * 100.0)
+    favs = {int(np.argmax(m)) for m in modelos}
+    pocos_datos = min(n_h, n_a) < 10
+
+    if spread_pp >= 13.0 or (len(favs) > 1 and spread_pp >= 9.0) or pocos_datos:
+        motivo = []
+        if spread_pp >= 9.0:
+            motivo.append(f"discrepancia de {spread_pp:.1f} pp entre modelos")
+        if len(favs) > 1:
+            motivo.append("distinto favorito según el modelo")
+        if pocos_datos:
+            motivo.append(f"muestra corta ({min(n_h, n_a)} PJ)")
+        return {
+            "estado": "🔴 Alerta: Partido Trampa / Alta Discrepancia",
+            "spread_pp": round(spread_pp, 1),
+            "es_trampa": True,
+            "mensaje": "⚠️ Precaución (No-Bet o reducir stake): " + ", ".join(motivo) + ".",
+            "penalizacion": 0.04,
+        }
+    if spread_pp <= 6.5 and len(favs) == 1:
+        return {
+            "estado": "🟢 Alto Consenso entre Modelos",
+            "spread_pp": round(spread_pp, 1),
+            "es_trampa": False,
+            "mensaje": f"✅ Dixon-Coles, Elo y el Clasificador coinciden estrechamente (dif. máx. {spread_pp:.1f} pp).",
+            "penalizacion": 0.0,
+        }
+    return {
+        "estado": "🟡 Consenso Moderado",
+        "spread_pp": round(spread_pp, 1),
+        "es_trampa": False,
+        "mensaje": f"Acuerdo normal entre modelos (diferencia máx. {spread_pp:.1f} pp).",
+        "penalizacion": 0.01,
+    }
+
+
+def selecciones_bajo_riesgo(home, away, p_fin, s_1x2, mk, s_mk, secundarios=None, basico=False, max_picks=3, penalizacion_consenso=0.0):
     """Selecciona entre 2 y 3 mercados independientes con alta probabilidad y bajo riesgo (alto piso P10 en Monte Carlo).
     Descarta cuotas triviales (>90%) salvo que no exista alternativa en esa familia, y diversifica por categoría."""
     candidatos = []
@@ -192,9 +333,9 @@ def selecciones_bajo_riesgo(home, away, p_fin, s_1x2, mk, s_mk, secundarios=None
             pen_rango = (prob - 0.89) * 1.8
         elif prob < 0.65:
             pen_rango = (0.65 - prob) * 1.5
-        score = p10 - 0.25 * (p90 - p10) - penalizacion - pen_rango
+        score = p10 - 0.25 * (p90 - p10) - penalizacion - penalizacion_consenso - pen_rango
         if 0.58 <= prob <= 0.94:
-            if prob >= 0.76 and p10 >= 0.68:
+            if prob >= 0.76 and p10 >= 0.68 and penalizacion_consenso < 0.03:
                 riesgo = "🟢 Muy bajo"
             elif prob >= 0.68 and p10 >= 0.60:
                 riesgo = "🟢 Bajo"
@@ -211,7 +352,7 @@ def selecciones_bajo_riesgo(home, away, p_fin, s_1x2, mk, s_mk, secundarios=None
                 "_score": score,
             })
 
-    # 1. Familia Resultado (1X2 y Doble Oportunidad)
+    # 1. Familia Resultado (1X2, Doble Oportunidad y Draw No Bet / Empate No Acción)
     agregar("Resultado", f"Gana {home}", p_fin[0], s_1x2[:, 0])
     agregar("Resultado", f"Gana {away}", p_fin[2], s_1x2[:, 2])
     etq_1x = f"{home} o Empate" if basico else f"1X ({home} o Empate)"
@@ -220,6 +361,12 @@ def selecciones_bajo_riesgo(home, away, p_fin, s_1x2, mk, s_mk, secundarios=None
     agregar("Resultado", etq_1x, p_fin[0] + p_fin[1], s_1x2[:, 0] + s_1x2[:, 1])
     agregar("Resultado", etq_x2, p_fin[1] + p_fin[2], s_1x2[:, 1] + s_1x2[:, 2])
     agregar("Resultado", etq_12, p_fin[0] + p_fin[2], s_1x2[:, 0] + s_1x2[:, 2])
+    # Draw No Bet (probabilidad de éxito excluyendo el empate)
+    denom_dnb = np.maximum(s_1x2[:, 0] + s_1x2[:, 2], 1e-6)
+    p_dnb_h = float(p_fin[0] / max(p_fin[0] + p_fin[2], 1e-6))
+    p_dnb_a = float(p_fin[2] / max(p_fin[0] + p_fin[2], 1e-6))
+    agregar("Resultado", f"{home} DNB (Empate No Acción)", p_dnb_h, s_1x2[:, 0] / denom_dnb, 0.005)
+    agregar("Resultado", f"{away} DNB (Empate No Acción)", p_dnb_a, s_1x2[:, 2] / denom_dnb, 0.005)
 
     # 2. Familia Goles (Over / Under)
     for k, etq in (("Over 1.5", "Over 1.5 goles"), ("Over 2.5", "Over 2.5 goles"),
@@ -256,3 +403,78 @@ def selecciones_bajo_riesgo(home, away, p_fin, s_1x2, mk, s_mk, secundarios=None
     for s in seleccionados:
         s.pop("_score", None)
     return seleccionados
+
+
+def escanear_jornada(partidos, P_liga, fecha, w_dc=0.6, sigma=0.12, basico=False):
+    """Evalúa múltiples cruces [(local, visita), ...] de una jornada, los ordena de menor a mayor riesgo
+    y construye la Mejor Combinada Doble (2 partidos) de alta probabilidad."""
+    est, dc, lr, df = P_liga["estado"], P_liga["dc"], P_liga["lr"], P_liga["df"]
+    tasa_emp = float((df["FTR"] == "D").mean())
+    rng = np.random.default_rng(42)
+    filas = []
+
+    for h, a in partidos:
+        if h == a:
+            continue
+        lam, mu = tasas_dc(dc, h, a, False)
+        rho = dc["rho"]
+        M = matriz(lam, mu, rho)
+        p_dc = probs_1x2(M)
+        p_elo = est.elo.prob_1x2(h, a, False, tasa_empate=tasa_emp)
+        f = est.features(h, a, fecha)
+        p_lr = predecir_lr(lr, pd.DataFrame([f])[FEATS])[0]
+        p_fin = w_dc * p_dc + (1.0 - w_dc) * p_lr
+
+        n_h, n_a = est.n.get(h, 0), est.n.get(a, 0)
+        cons = diagnosticar_consenso(p_dc, p_elo, p_lr, n_h, n_a)
+        f_h = float(np.clip(math.sqrt(38.0 / max(n_h, 5)), 0.7, 2.0))
+        f_a = float(np.clip(math.sqrt(38.0 / max(n_a, 5)), 0.7, 2.0))
+        s_lam = sigma * math.sqrt(0.7 * f_h**2 + 0.3 * f_a**2)
+        s_mu = sigma * math.sqrt(0.7 * f_a**2 + 0.3 * f_h**2)
+
+        s_1x2, s_mk = [], []
+        for _ in range(200):
+            pl = lam * math.exp(rng.normal(-0.5 * s_lam**2, s_lam))
+            pm = mu * math.exp(rng.normal(-0.5 * s_mu**2, s_mu))
+            Ms = matriz(pl, pm, rho)
+            s_1x2.append(w_dc * probs_1x2(Ms) + (1.0 - w_dc) * p_lr)
+            s_mk.append(mercados_goles(Ms))
+        s_1x2 = np.array(s_1x2)
+        mk = mercados_goles(M)
+        picks = selecciones_bajo_riesgo(h, a, p_fin, s_1x2, mk, s_mk, basico=basico,
+                                        max_picks=2, penalizacion_consenso=cons["penalizacion"])
+        if not picks:
+            continue
+        mejor = picks[0]
+        filas.append({
+            "Partido": f"{h} vs {a}",
+            "Mejor selección": mejor["Selección"],
+            "Categoría": mejor["Categoría"],
+            "Probabilidad %": round(mejor["Probabilidad"] * 100, 1),
+            "Piso MC (P10) %": round(mejor["P10"] * 100, 1),
+            "Cuota justa": mejor["Cuota justa"],
+            "Riesgo": mejor["Riesgo"],
+            "Consenso": cons["estado"],
+            "_p": mejor["Probabilidad"],
+            "_p10": mejor["P10"],
+            "_trampa": cons["es_trampa"],
+        })
+
+    filas.sort(key=lambda x: (not x["_trampa"], x["_p10"], x["_p"]), reverse=True)
+    combinada = None
+    aptos = [x for x in filas if not x["_trampa"]] or filas
+    if len(aptos) >= 2:
+        a1, a2 = aptos[0], aptos[1]
+        p_comb = a1["_p"] * a2["_p"]
+        p10_comb = a1["_p10"] * a2["_p10"]
+        combinada = {
+            "Selección 1": f"{a1['Partido']}: {a1['Mejor selección']} ({a1['Probabilidad %']:.1f}%)",
+            "Selección 2": f"{a2['Partido']}: {a2['Mejor selección']} ({a2['Probabilidad %']:.1f}%)",
+            "Probabilidad conjunta %": round(p_comb * 100.0, 1),
+            "Piso conjunto (P10) %": round(p10_comb * 100.0, 1),
+            "Cuota justa combinada": round(1.0 / max(p_comb, 1e-6), 2),
+        }
+    for x in filas:
+        for k in ("_p", "_p10", "_trampa"):
+            x.pop(k, None)
+    return {"ranking": pd.DataFrame(filas), "combinada": combinada}

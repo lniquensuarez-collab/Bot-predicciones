@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS partidos (
     goles_l INTEGER, goles_v INTEGER, resultado TEXT,
     tiros_l REAL, tiros_v REAL, tiros_p_l REAL, tiros_p_v REAL, corners_l REAL, corners_v REAL,
     cuota_l REAL, cuota_e REAL, cuota_v REAL,
-    faltas_l REAL, faltas_v REAL, amarillas_l REAL, amarillas_v REAL, rojas_l REAL, rojas_v REAL
+    faltas_l REAL, faltas_v REAL, amarillas_l REAL, amarillas_v REAL, rojas_l REAL, rojas_v REAL,
+    arbitro TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_partidos_comp_fecha ON partidos(competicion, fecha);
 CREATE TABLE IF NOT EXISTS elo_actual (
@@ -30,12 +31,13 @@ CREATE TABLE IF NOT EXISTS ingestas (
 COLS = ["id", "tipo", "competicion", "temporada", "fecha", "local", "visita", "goles_l", "goles_v",
         "resultado", "tiros_l", "tiros_v", "tiros_p_l", "tiros_p_v", "corners_l", "corners_v",
         "cuota_l", "cuota_e", "cuota_v", "faltas_l", "faltas_v", "amarillas_l", "amarillas_v",
-        "rojas_l", "rojas_v"]
+        "rojas_l", "rojas_v", "arbitro"]
 
 MAPA = {"fecha": "Date", "local": "HomeTeam", "visita": "AwayTeam", "goles_l": "FTHG", "goles_v": "FTAG",
         "resultado": "FTR", "tiros_l": "HS", "tiros_v": "AS", "tiros_p_l": "HST", "tiros_p_v": "AST",
         "corners_l": "HC", "corners_v": "AC", "faltas_l": "HF", "faltas_v": "AF", "amarillas_l": "HY",
-        "amarillas_v": "AY", "rojas_l": "HR", "rojas_v": "AR", "temporada": "Season", "competicion": "Competicion"}
+        "amarillas_v": "AY", "rojas_l": "HR", "rojas_v": "AR", "temporada": "Season", "competicion": "Competicion",
+        "arbitro": "Referee"}
 
 
 def conectar(path=None):
@@ -52,7 +54,8 @@ def _migrar(con):
     existentes = {r[1] for r in con.execute("PRAGMA table_info(partidos)")}
     for c in COLS:
         if c not in existentes:
-            con.execute(f"ALTER TABLE partidos ADD COLUMN {c} REAL")
+            tipo_col = "TEXT" if c == "arbitro" else "REAL"
+            con.execute(f"ALTER TABLE partidos ADD COLUMN {c} {tipo_col}")
     con.commit()
 
 

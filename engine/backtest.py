@@ -25,6 +25,62 @@ def tabla_calibracion(P, y):
     return t
 
 
+def simular_apuestas(P, cuotas, y, ev_min=0.02, prob_min=0.55, kelly_frac=0.25):
+    """Simula apuestas de valor (EV >= ev_min y P >= prob_min) con stake plano (1 u) y Kelly fraccionario."""
+    P = np.asarray(P, dtype=float)
+    cuotas = np.asarray(cuotas, dtype=float)
+    y = np.asarray(y, dtype=int)
+    pl_plano = []
+    aciertos, cuotas_ap = [], []
+    banca_kelly = 100.0
+
+    for i in range(len(y)):
+        c_row = cuotas[i]
+        if np.any(np.isnan(c_row)) or np.any(c_row <= 1.0):
+            continue
+        p_row = P[i]
+        evs = p_row * c_row - 1.0
+        # Filtrar opciones que cumplen tanto probabilidad mínima como valor esperado mínimo
+        cand = [j for j in range(3) if p_row[j] >= prob_min and evs[j] >= ev_min]
+        if not cand:
+            continue
+        j = max(cand, key=lambda idx: evs[idx])
+        gano = (y[i] == j)
+        cuota_j = float(c_row[j])
+        ganancia_u = (cuota_j - 1.0) if gano else -1.0
+        pl_plano.append(ganancia_u)
+        aciertos.append(1.0 if gano else 0.0)
+        cuotas_ap.append(cuota_j)
+
+        f_k = min(0.05, kelly_frac * max(0.0, evs[j] / max(cuota_j - 1.0, 1e-6)))
+        banca_kelly *= (1.0 + f_k * (cuota_j - 1.0)) if gano else (1.0 - f_k)
+
+    n_ap = len(pl_plano)
+    if n_ap == 0:
+        return {
+            "resumen": {"Apuestas": 0, "Acierto %": 0.0, "Cuota media": 0.0,
+                        "Beneficio plano (u)": 0.0, "Yield / ROI %": 0.0,
+                        "Max Drawdown (u)": 0.0, "Kelly 1/4 ROI %": 0.0},
+            "curva": np.array([0.0]),
+        }
+    curva = np.concatenate([[0.0], np.cumsum(pl_plano)])
+    picos = np.maximum.accumulate(curva)
+    max_dd = float(np.max(picos - curva))
+    benef = float(curva[-1])
+    return {
+        "resumen": {
+            "Apuestas": int(n_ap),
+            "Acierto %": float(np.mean(aciertos) * 100.0),
+            "Cuota media": float(np.mean(cuotas_ap)),
+            "Beneficio plano (u)": round(benef, 2),
+            "Yield / ROI %": round(benef / n_ap * 100.0, 2),
+            "Max Drawdown (u)": round(max_dd, 2),
+            "Kelly 1/4 ROI %": round(banca_kelly - 100.0, 2),
+        },
+        "curva": curva,
+    }
+
+
 def correr_backtest(df, feats, half_life, w_dc, n_test, bloque_dias=21, progreso=None, ventaja_elo=60.0):
     y_all = df["FTR"].map(ETIQ).to_numpy()
     ini = len(df) - n_test
@@ -33,7 +89,6 @@ def correr_backtest(df, feats, half_life, w_dc, n_test, bloque_dias=21, progreso
     ids = np.unique(bloque_id[ini:])
     P_dc, P_lr, P_base, P_elo, idxs = [], [], [], [], []
     dc_prev = None
-    fechas = df["Date"].to_numpy()
     homes = df["HomeTeam"].to_numpy()
     aways = df["AwayTeam"].to_numpy()
     elo_diffs = feats["elo_diff"].to_numpy()
@@ -69,6 +124,9 @@ def correr_backtest(df, feats, half_life, w_dc, n_test, bloque_dias=21, progreso
 
     idxs = np.array(idxs)
     P_dc, P_lr, P_elo = np.array(P_dc), np.vstack(P_lr), np.vstack(P_elo)
+    cols_c = ["cuota_l", "cuota_e", "cuota_v"]
+    cuotas = df[cols_c].iloc[idxs].to_numpy(float) if all(c in df.columns for c in cols_c) else np.full((len(idxs), 3), np.nan)
     return {"y": y_all[idxs], "base": np.array(P_base), "elo": P_elo,
             "dc": P_dc, "lr": P_lr, "ens": w_dc * P_dc + (1 - w_dc) * P_lr,
-            "mercado": df[["mH", "mD", "mA"]].iloc[idxs].to_numpy()}
+            "mercado": df[["mH", "mD", "mA"]].iloc[idxs].to_numpy(),
+            "cuotas": cuotas}

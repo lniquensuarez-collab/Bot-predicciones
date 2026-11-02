@@ -86,7 +86,14 @@ def _filas(d, codigo, temporada=None):
     ftag = d["FTAG"].astype(int).tolist()
     ftr = d["FTR"].tolist()
     seasons = d["Season"].tolist() if "Season" in d.columns else [None] * len(d)
+    refs = d["Referee"].tolist() if "Referee" in d.columns else [None] * len(d)
     cl, ce, cv = cuotas["l"].to_numpy(), cuotas["e"].to_numpy(), cuotas["v"].to_numpy()
+
+    def _txt(v):
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            return None
+        s = str(v).strip()
+        return s if s and s.lower() != "nan" else None
 
     filas = []
     for i in range(len(d)):
@@ -102,7 +109,8 @@ def _filas(d, codigo, temporada=None):
             faltas_l=_num(cols["HF"][i]), faltas_v=_num(cols["AF"][i]),
             amarillas_l=_num(cols["HY"][i]), amarillas_v=_num(cols["AY"][i]),
             rojas_l=_num(cols["HR"][i]), rojas_v=_num(cols["AR"][i]),
-            cuota_l=_num(cl[i]), cuota_e=_num(ce[i]), cuota_v=_num(cv[i])))
+            cuota_l=_num(cl[i]), cuota_e=_num(ce[i]), cuota_v=_num(cv[i]),
+            arbitro=_txt(refs[i])))
     return filas
 
 

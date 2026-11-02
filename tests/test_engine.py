@@ -31,7 +31,8 @@ def sinteticos(codigo, n=700, seed=0, c0=0.30, ha0=0.20):
                           faltas_l=float(rng.poisson(11)), faltas_v=float(rng.poisson(12)),
                           amarillas_l=float(rng.poisson(1.8)), amarillas_v=float(rng.poisson(2.1)),
                           rojas_l=float(rng.poisson(.05)), rojas_v=float(rng.poisson(.06)),
-                          cuota_l=2.1, cuota_e=3.3, cuota_v=3.4))
+                          cuota_l=2.1, cuota_e=3.3, cuota_v=3.4,
+                          arbitro="Ref_Severo" if k % 2 == 0 else "Ref_Suave"))
     return filas
 
 
@@ -156,6 +157,21 @@ def test_motor():
         picks = md.selecciones_bajo_riesgo("T1_Eq1", "T1_Eq2", md.probs_1x2(M), s_1x2_test, mk, [mk] * 50)
         assert 2 <= len(picks) <= 3 and all(p["Probabilidad"] >= 0.58 for p in picks)
 
+        # Verifica las 6 mejoras de apostador (asiáticos/DNB, Kelly/EV, consenso/trampa, árbitro, escáner, backtest financiero)
+        asi = md.mercados_asiaticos(M, md.probs_1x2(M), "T1_Eq1", "T1_Eq2")
+        assert "T1_Eq1 DNB (AH 0.0)" in asi["handicap"].index and "Over 2 goles (asiático)" in asi["goles"].index
+        kelly = md.calcular_kelly_ev(0.60, 0.55, 1.90)
+        assert kelly["EV %"] > 10.0 and kelly["Stake Kelly 1/4 %"] > 0.0 and "Valor" in kelly["Señal"]
+        cons_ok = md.diagnosticar_consenso([0.50, 0.28, 0.22], [0.49, 0.28, 0.23], [0.51, 0.27, 0.22], 25, 25)
+        cons_trampa = md.diagnosticar_consenso([0.60, 0.20, 0.20], [0.35, 0.30, 0.35], [0.40, 0.25, 0.35], 25, 25)
+        assert not cons_ok["es_trampa"] and cons_trampa["es_trampa"]
+        assert "Ref_Severo" in est.arbitros_disponibles()
+        f_arb = est.factor_arbitro("Ref_Severo")
+        assert f_arb["partidos"] > 10 and 0.65 <= f_arb["amarillas"] <= 1.50
+        scan = md.escanear_jornada([("T1_Eq1", "T1_Eq2"), ("T1_Eq3", "T1_Eq4")],
+                                   {"estado": est, "dc": dc, "lr": lr, "df": df}, df["Date"].max())
+        assert len(scan["ranking"]) == 2 and scan["combinada"] is not None
+
         # Modo europeo entre ligas
         df2 = db.cargar_partidos("T2", con)
         f2, est2 = construir_features(df2)
@@ -180,6 +196,8 @@ def test_motor():
         for k in ["base", "elo", "dc", "lr", "ens"]:
             assert 0.5 < bt.metricas(R[k], R["y"])["Log Loss"] < 1.6, k
         assert len(bt.tabla_calibracion(R["ens"], R["y"])) > 3
+        sim_fin = bt.simular_apuestas(R["ens"], R["cuotas"], R["y"], ev_min=0.01, prob_min=0.45)
+        assert "Yield / ROI %" in sim_fin["resumen"] and len(sim_fin["curva"]) >= 1
         con.close()
 
 

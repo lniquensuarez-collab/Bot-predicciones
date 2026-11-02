@@ -146,8 +146,11 @@ with tab1:
     away = c2.selectbox("✈️ Visita:", eq_a, index=min(1, len(eq_a) - 1) if eq_a else 0)
     fecha = pd.Timestamp(st.date_input("📅 Fecha del partido", value=date.today()))
 
-    with st.expander("🎛️ Escenario (ajustes manuales)"):
-        st.caption("Si modificas algo se usa solo Dixon-Coles (Elo y clasificador no admiten ajustes manuales).")
+    arbs_disp = P_h["estado"].arbitros_disponibles() if not cross else []
+    with st.expander("🎛️ Escenario (ajustes manuales y árbitro)"):
+        st.caption("Si modificas los % de ataque/defensa se usa solo Dixon-Coles. El árbitro ajusta faltas y tarjetas.")
+        arbitro_sel = st.selectbox("⚖️ Árbitro designado (opcional, ajusta faltas y tarjetas)",
+                                   ["Promedio de la liga (sin especificar)"] + arbs_disp, index=0)
         s1, s2 = st.columns(2)
         att_h = s1.slider("Ataque local %", -40, 40, 0)
         att_a = s2.slider("Ataque visita %", -40, 40, 0)
@@ -155,7 +158,7 @@ with tab1:
         def_a = s2.slider("Debilidad defensa visita %", -40, 40, 0)
         sigma = st.slider("Incertidumbre del modelo (σ)", 0.0, 0.30, 0.12, step=0.02)
 
-    with st.expander("💱 Comparar con cuotas (opcional)"):
+    with st.expander("💱 Comparar con cuotas y Gestión de Banca (Kelly / EV)"):
         q1, q2, q3 = st.columns(3)
         o_h = q1.number_input("Cuota 1", 0.0, 100.0, 0.0, step=0.05)
         o_d = q2.number_input("Cuota X", 0.0, 100.0, 0.0, step=0.05)
@@ -239,14 +242,20 @@ with tab1:
         s_1x2 = np.array(s_1x2)
         mult_tot = np.array(mult_tot)
         lo, hi = np.percentile(s_1x2, 10, axis=0), np.percentile(s_1x2, 90, axis=0)
+        p25 = np.percentile(s_1x2, 25, axis=0)
+        consenso = md.diagnosticar_consenso(p_dc, p_elo, None if (cross or escenario) else p_lr, n_h, n_a)
 
         st.subheader(f"{home} vs {away}")
         if basico:
-            st.caption(f"Liga sin stats detalladas (solo 1X2 y goles) | {n_h} PJ vs {n_a} PJ")
+            st.caption(f"Liga sin stats detalladas (solo 1X2 y goles) | {n_h} PJ vs {n_a} PJ · {consenso['estado']}")
         else:
             nota_incert = f" ⚠️ (incertidumbre alta: {n_h if n_h < 15 else n_a} PJ)" if min(n_h, n_a) < 15 else ""
             st.caption(f"Elo interno: {est_h.elo.rating(home):.0f} ({n_h} PJ) vs {est_a.elo.rating(away):.0f} ({n_a} PJ)"
                        + (" · cancha neutral" if neutral else "") + f" · Modelo: {usado}{nota_incert}")
+            if consenso["es_trampa"]:
+                st.warning(f"{consenso['estado']} — {consenso['mensaje']}")
+            else:
+                st.caption(f"{consenso['estado']} — {consenso['mensaje']}")
 
         if cross:
             st.warning("Partido entre ligas: el resultado depende del supuesto de fuerza relativa de cada liga "
@@ -281,6 +290,14 @@ with tab1:
             st.markdown("#### 📊 Comparación de modelos")
             st.dataframe(comp.round(1).fillna("-"), use_container_width=True)
 
+            if min(o_h, o_d, o_a) > 1:
+                st.markdown("#### 💹 Valor Esperado (EV%) y Gestión de Banca (Kelly 1/4 Conservador)")
+                filas_ev = {}
+                for nom_m, p_m, p25_m, c_m in zip(["Local (1)", "Empate (X)", "Visita (2)"], p_fin, p25, [o_h, o_d, o_a]):
+                    res_k = md.calcular_kelly_ev(p_m, p25_m, c_m)
+                    filas_ev[nom_m] = {"Cuota": c_m, "Prob. Modelo %": round(p_m * 100, 1), **res_k}
+                st.dataframe(pd.DataFrame(filas_ev).T, use_container_width=True)
+
             st.dataframe(pd.DataFrame({"Probabilidad %": {k: v * 100 for k, v in mk.items()}}).round(1),
                          use_container_width=True)
             st.caption(f"Over 2.5: {np.median(s_o25) * 100:.1f}% "
@@ -289,6 +306,14 @@ with tab1:
                      "12 (sin empate)": p_fin[0] + p_fin[2]}
             st.dataframe(pd.DataFrame({"Probabilidad %": {k: v * 100 for k, v in doble.items()}}).round(1),
                          use_container_width=True)
+
+            asiaticos = md.mercados_asiaticos(M, p_fin=p_fin, home=home[:14], away=away[:14])
+            with st.expander("🌏 Coberturas Asiáticas y Draw No Bet (Empate No Acción)"):
+                st.caption("Draw No Bet (AH 0.0) y las líneas enteras/.25/.75 devuelven total o parcialmente el stake en caso de empate.")
+                st.write("**Hándicap Asiático y Draw No Bet**")
+                st.dataframe(asiaticos["handicap"].round(1), use_container_width=True)
+                st.write("**Líneas de Goles Asiáticas**")
+                st.dataframe(asiaticos["goles"].round(1), use_container_width=True)
 
             st.markdown("#### 🎯 Marcadores más probables")
             ts = md.top_marcadores(M, 5)
@@ -365,15 +390,21 @@ with tab1:
             formato_ct.update({"Esp. local": "{:.1f}", "Esp. visita": "{:.1f}", "Total": "{:.1f}"})
             st.dataframe(df_ct.style.format(formato_ct, na_rep="-"), use_container_width=True)
 
-        # ---- Faltas y tarjetas por equipo ----
+        # ---- Faltas y tarjetas por equipo (con factor árbitro bayesiano) ----
         if disp["faltas"] or disp["tarjetas"]:
             st.markdown("#### 🟨 Faltas y tarjetas por equipo")
-            st.caption("Orientativo: el árbitro influye mucho en las tarjetas y este modelo no lo conoce.")
+            f_arb = est_h.factor_arbitro(None if arbitro_sel.startswith("Promedio") else arbitro_sel)
+            if f_arb["partidos"] > 0:
+                st.caption(f"Árbitro activo: **{arbitro_sel}** ({f_arb['partidos']} PJ en liga) · "
+                           f"Ajuste bayesiano: Faltas ×{f_arb['faltas']:.2f}, Amarillas ×{f_arb['amarillas']:.2f}, Rojas ×{f_arb['rojas']:.2f}")
+            else:
+                st.caption("Usando rigor arbitral promedio de la liga (puedes elegir un árbitro específico en 🎛️ Escenario).")
             equipo = pd.DataFrame(index=[home[:18], away[:18], "Total"])
             tot_tablas, eq_tablas = {}, {}
 
             if disp["faltas"]:
                 fh, fa = esperados(est_h, est_a, home, away, "F", "FA", dh, "HF", da, "AF")
+                fh, fa = fh * f_arb["faltas"], fa * f_arb["faltas"]
                 equipo["Faltas"] = [fh, fa, fh + fa]
                 
                 r_tot = disp_partido(dh, da, home, away, "HF", "AF")
@@ -389,6 +420,7 @@ with tab1:
 
             if disp["tarjetas"]:
                 yh, ya = esperados(est_h, est_a, home, away, "Y", "YA", dh, "HY", da, "AY")
+                yh, ya = yh * f_arb["amarillas"], ya * f_arb["amarillas"]
                 equipo["Amarillas"] = [yh, ya, yh + ya]
                 
                 r_tot = disp_partido(dh, da, home, away, "HY", "AY")
@@ -404,8 +436,8 @@ with tab1:
 
             if disp["tarjetas"] and disp["rojas"]:
                 rh, ra = esperados(est_h, est_a, home, away, "R", "RA", dh, "HR", da, "AR")
-                rh = 0.5 * rh + 0.5 * dh["HR"].mean()
-                ra = 0.5 * ra + 0.5 * da["AR"].mean()
+                rh = (0.5 * rh + 0.5 * dh["HR"].mean()) * f_arb["rojas"]
+                ra = (0.5 * ra + 0.5 * da["AR"].mean()) * f_arb["rojas"]
                 equipo["Rojas"] = [rh, ra, rh + ra]
                 equipo["P(≥1 roja) %"] = [(1 - math.exp(-m)) * 100 for m in (rh, ra, rh + ra)]
 
@@ -421,11 +453,12 @@ with tab1:
 
         # ---- Resumen: Selecciones de mayor probabilidad y bajo riesgo (Top 2-3) ----
         top_riesgo = md.selecciones_bajo_riesgo(home, away, p_fin, s_1x2, mk, s_mk,
-                                                secundarios=sec_cands, basico=basico, max_picks=3)
+                                                secundarios=sec_cands, basico=basico, max_picks=3,
+                                                penalizacion_consenso=consenso["penalizacion"])
         if top_riesgo:
             st.markdown("#### 🛡️ Resumen: Opciones más probables y de bajo riesgo")
-            st.caption("Seleccionadas combinando alta probabilidad esperada, piso de seguridad en Monte Carlo (P10) "
-                       "y diversificación entre categorías para no repetir el mismo mercado.")
+            st.caption("Seleccionadas combinando alta probabilidad esperada, piso de seguridad en Monte Carlo (P10), "
+                       "consenso entre modelos y diversificación entre categorías.")
             for col, pick in zip(st.columns(len(top_riesgo)), top_riesgo):
                 col.metric(pick["Selección"], f"{pick['Probabilidad'] * 100:.1f}%")
                 col.caption(f"{pick['Riesgo']} · Piso–Techo: {pick['P10'] * 100:.0f}–{pick['P90'] * 100:.0f}% "
@@ -437,11 +470,36 @@ with tab1:
                     "Probabilidad %": round(p["Probabilidad"] * 100, 1),
                     "Rango MC (10–90%)": f"{p['P10'] * 100:.0f}% – {p['P90'] * 100:.0f}%",
                     "Cuota mín. justa": p["Cuota justa"],
+                    "Cuota con valor (EV≥2%)": round(1.02 / max(p["Probabilidad"], 1e-6), 2),
                     "Nivel de riesgo": p["Riesgo"],
                 }
                 for p in top_riesgo
             ]).set_index("Selección")
             st.dataframe(df_riesgo, use_container_width=True)
+
+    # ---- Escáner de Jornada / Armador de Combinada Doble ----
+    if not cross and len(eq_h) >= 4:
+        with st.expander("🔍 Escáner de Jornada y Armador de Combinada Doble (2 partidos)"):
+            st.caption("Selecciona hasta 5 partidos de la jornada para ordenarlos de menor a mayor riesgo "
+                       "y obtener la Mejor Combinada Doble sin incluir partidos trampa.")
+            n_cruces = min(4, len(eq_h) // 2)
+            partidos_scan = []
+            for idx_c in range(n_cruces):
+                sc1, sc2 = st.columns(2)
+                eh_i = sc1.selectbox(f"Local #{idx_c + 1}", eq_h, index=(idx_c * 2) % len(eq_h), key=f"sc_h_{idx_c}")
+                ea_i = sc2.selectbox(f"Visita #{idx_c + 1}", eq_h, index=(idx_c * 2 + 1) % len(eq_h), key=f"sc_a_{idx_c}")
+                if eh_i != ea_i:
+                    partidos_scan.append((eh_i, ea_i))
+            if st.button("📊 Escanear jornada y armar combinada doble", use_container_width=True):
+                res_scan = md.escanear_jornada(partidos_scan, P_h, fecha, w_dc=w_dc, sigma=sigma, basico=basico)
+                if not res_scan["ranking"].empty:
+                    st.dataframe(res_scan["ranking"], use_container_width=True, hide_index=True)
+                if res_scan["combinada"]:
+                    cb = res_scan["combinada"]
+                    st.success(f"🤝 **Mejor Combinada Doble:** {cb['Selección 1']}  ➕  {cb['Selección 2']}  \n"
+                               f"Probabilidad conjunta: **{cb['Probabilidad conjunta %']:.1f}%** "
+                               f"(Piso P10: {cb['Piso conjunto (P10) %']:.1f}%) · "
+                               f"Cuota mínima justa: **{cb['Cuota justa combinada']:.2f}**")
 
 # --------------------------------- RANKING ------------------------------------
 with tab2:
@@ -499,6 +557,27 @@ with tab3:
             st.markdown("#### Curva de calibración (Ensemble)")
             st.line_chart(cal.set_index("Predicho")[["Observado", "Ideal"]])
             st.dataframe(cal[["Predicho", "Observado", "N"]].round(3), use_container_width=True)
+
+            if usar_m and "cuotas" in R:
+                st.markdown("#### 💰 Simulación Financiera (ROI / Yield, Unidades y Drawdown)")
+                st.caption("Simula apostar 1 unidad (o Kelly 1/4) cuando la probabilidad del modelo supera el umbral "
+                           "y tiene Valor Esperado positivo (EV = P × Cuota - 1) frente a las cuotas históricas.")
+                f1, f2 = st.columns(2)
+                ev_min_pct = f1.slider("EV mínimo para apostar (%)", 0.0, 15.0, 2.0, step=0.5)
+                prob_min_pct = f2.slider("Probabilidad mínima del modelo (%)", 40.0, 80.0, 55.0, step=5.0)
+                res_fin, curvas_fin = {}, {}
+                for nom_mod, p_mod in (("Ensemble", R["ens"]), ("Dixon-Coles", R["dc"]), ("Clasificador", R["lr"])):
+                    sim = bt.simular_apuestas(p_mod[sel_], R["cuotas"][sel_], y[sel_],
+                                              ev_min=ev_min_pct / 100.0, prob_min=prob_min_pct / 100.0)
+                    res_fin[nom_mod] = sim["resumen"]
+                    curvas_fin[nom_mod] = sim["curva"]
+                st.dataframe(pd.DataFrame(res_fin).T, use_container_width=True)
+                max_len = max(len(c) for c in curvas_fin.values())
+                df_curvas = pd.DataFrame({
+                    k: np.pad(c, (0, max_len - len(c)), mode="edge") for k, c in curvas_fin.items()
+                })
+                st.markdown("##### 📈 Evolución de Ganancias Acumuladas (Unidades)")
+                st.line_chart(df_curvas)
 
 # -------------------------------- METODOLOGÍA ---------------------------------
 with tab5:
