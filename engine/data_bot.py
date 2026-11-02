@@ -195,8 +195,15 @@ def _enriquecer_xg_understat(filas, codigo, temporada):
         pass
 
 
+def _extraer_score(s):
+    if isinstance(s, dict):
+        v = s.get("value")
+        return _num(v if v is not None else s.get("displayValue"))
+    return _num(s)
+
+
 def _filas_espn_eventos(eventos, codigo):
-    """Convierte eventos JSON del scoreboard de ESPN (ej. per.1 Liga 1 de Perú) al esquema SQLite,
+    """Convierte eventos JSON de ESPN (/scoreboard o /teams/{id}/schedule) al esquema SQLite,
     extrayendo goles, tiros a puerta, xG calibrado, córners, faltas y tarjetas amarillas/rojas."""
     out = []
     for ev in eventos or []:
@@ -209,14 +216,18 @@ def _filas_espn_eventos(eventos, codigo):
         c_a = next((c for c in comps if c.get("homeAway") == "away"), None)
         if not c_h or not c_a:
             continue
-        h_raw = (c_h.get("team") or {}).get("name") or (c_h.get("team") or {}).get("displayName")
-        a_raw = (c_a.get("team") or {}).get("name") or (c_a.get("team") or {}).get("displayName")
-        gl = _num(c_h.get("score"))
-        gv = _num(c_a.get("score"))
+        th = c_h.get("team") or {}
+        ta = c_a.get("team") or {}
+        h_raw = th.get("name") or th.get("displayName") or th.get("location") or th.get("shortDisplayName")
+        a_raw = ta.get("name") or ta.get("displayName") or ta.get("location") or ta.get("shortDisplayName")
+        gl = _extraer_score(c_h.get("score"))
+        gv = _extraer_score(c_a.get("score"))
         if not h_raw or not a_raw or gl is None or gv is None:
             continue
         h = ALIAS_EQUIPOS.get(_norm_nombre(h_raw), str(h_raw).strip())
         a = ALIAS_EQUIPOS.get(_norm_nombre(a_raw), str(a_raw).strip())
+        if h == a:
+            continue
         f_raw = str(comp.get("date") or ev.get("date") or "")[:10]
         if len(f_raw) < 10:
             continue
@@ -272,25 +283,36 @@ def _filas_espn_eventos(eventos, codigo):
 
 
 def _descargar_historial_espn(slug, codigo, anios=3):
-    """Descarga los últimos `anios` años de una liga desde el endpoint público de ESPN (ej. per.1 para Perú Liga 1)."""
+    """Descarga los últimos `anios` años de una liga desde los endpoints públicos de ESPN (/teams y /schedule)."""
     from concurrent.futures import ThreadPoolExecutor
     from datetime import date as _date
 
-    anio_actual = _date.today().year
-    hoy_ymd = _date.today().strftime("%Y%m%d")
-    bimestres = [("0101", "0228"), ("0301", "0430"), ("0501", "0630"),
-                 ("0701", "0831"), ("0901", "1031"), ("1101", "1231")]
-    rangos = []
-    for y in range(anio_actual - max(1, int(anios)) + 1, anio_actual + 1):
-        for ini, fin in bimestres:
-            r_ini = f"{y}{ini}"
-            r_fin = f"{y}{fin}"
-            if r_ini <= hoy_ymd:
-                rangos.append(f"{r_ini}-{min(r_fin, hoy_ymd)}")
+    try:
+        r_t = requests.get(f"https://site.api.espn.com/apis/site/v2/sports/soccer/{slug}/teams",
+                           headers=HEADERS, timeout=12)
+        if r_t.status_code != 200:
+            return []
+        equipos_raw = (
+            r_t.json()
+            .get("sports", [{}])[0]
+            .get("leagues", [{}])[0]
+            .get("teams", [])
+        )
+        team_ids = [str(t.get("team", {}).get("id")) for t in equipos_raw if t.get("team", {}).get("id")]
+    except Exception:
+        return []
 
-    def _pedir(rango):
+    if not team_ids:
+        return []
+
+    anio_actual = _date.today().year
+    temporadas = list(range(anio_actual - max(2, int(anios)) + 1, anio_actual + 1))
+    tareas = [(tid, y) for y in temporadas for tid in team_ids]
+
+    def _pedir_schedule(par):
+        tid, y = par
         try:
-            url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{slug}/scoreboard?dates={rango}&limit=300"
+            url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{slug}/teams/{tid}/schedule?season={y}"
             r = requests.get(url, headers=HEADERS, timeout=12)
             if r.status_code == 200:
                 return _filas_espn_eventos(r.json().get("events", []), codigo)
@@ -299,13 +321,16 @@ def _descargar_historial_espn(slug, codigo, anios=3):
         return []
 
     filas = []
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        for res in ex.map(_pedir, rangos):
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        for res in ex.map(_pedir_schedule, tareas):
             filas.extend(res)
-    # Deduplicar por id manteniendo orden cronológico
+
+    # Deduplicar por id (si una versión trae estadísticas completas, conservarla)
     vistos = {}
     for f in filas:
-        vistos[f["id"]] = f
+        cid = f["id"]
+        if cid not in vistos or (vistos[cid]["tiros_p_l"] is None and f["tiros_p_l"] is not None):
+            vistos[cid] = f
     return sorted(vistos.values(), key=lambda x: x["fecha"])
 
 
