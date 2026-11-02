@@ -20,10 +20,10 @@ from engine import models as md
 
 # En Streamlit Cloud, al actualizar por Git sin reiniciar contenedor, recarga submódulos si quedaron en caché
 if (not hasattr(ft.Estado, "resumen_xg")
-        or not hasattr(_cfg, "TORNEOS_INTERNACIONALES")
-        or not hasattr(md, "mercados_asiaticos")
+        or not hasattr(_cfg, "ALTITUD_PERU")
+        or not hasattr(md, "ajuste_altura_peru")
         or not hasattr(bt, "simular_apuestas")
-        or not hasattr(data_bot, "resolver_equipo_internacional")):
+        or not hasattr(data_bot, "importar_archivo_usuario")):
     for _mod in (_cfg, _elo, db, data_bot, ft, md, bt):
         importlib.reload(_mod)
 
@@ -32,7 +32,7 @@ from engine.elo_system import prob_cruzada
 
 st.set_page_config(page_title="Ultimate AI V14", page_icon="⚽", layout="centered")
 st.title("⚽ ULTIMATE AI V14")
-st.caption("Dixon-Coles + Elo + clasificador · Solo ligas de clubes · Datos: football-data.co.uk")
+st.caption("Dixon-Coles + Elo + clasificador · Ligas de clubes + 🇵🇪 Liga 1 Perú + Torneos Internacionales")
 
 LIGAS_EU = [n for n, c in LIGAS.items() if c["europa"]]
 
@@ -52,9 +52,10 @@ def ejecutar(fn, *args, **kw):
 
 
 @st.cache_data(show_spinner="Preparando liga (Elo, features, modelos)...")
-def preparar_liga(codigo, half_life, _version="v14.3"):
+def preparar_liga(codigo, half_life, _version="v14.6"):
     df = db.cargar_partidos(codigo)
-    if len(df) < 200:
+    min_p = 80 if codigo == "PER" else 200
+    if len(df) < min_p:
         return None
     feats, est = ft.construir_features(df)
     dc, lr = md.entrenar_produccion(df, feats, half_life)
@@ -77,6 +78,9 @@ with st.sidebar:
     half_life = st.slider("Vida media del peso temporal (días)", 90, 900, 365, step=30)
     w_dc = st.slider("Peso de Dixon-Coles en el ensemble", 0.0, 1.0, 0.6, step=0.1)
     liga_principal = st.selectbox("🏆 Liga (ranking y backtest)", list(LIGAS))
+    casa_apuestas = st.selectbox("🏦 Casa de apuestas",
+                                 ["Betano (Pago Anticipado +2 goles)", "Betsafe (Perú / Mercados)", "Estándar (90 min)"],
+                                 index=0)
     st.divider()
     ir_comb = st.button("🎯 Combinadas", use_container_width=True,
                         help="Abre la pestaña de Escáner de Jornada, Partidos del Día y Armador de Combinadas")
@@ -142,6 +146,18 @@ with tab4:
             st.success(f"{r[0]} partidos procesados")
             for a in r[1]:
                 st.warning(a)
+    with st.expander("📂 Subir archivo CSV / Excel propio (ej. Liga 1 Perú o cuotas Betsafe / Betano)"):
+        st.caption("Puedes cargar un archivo `.csv` o `.xlsx` con columnas `Fecha`/`Date`, `Local`/`HomeTeam`, "
+                   "`Visita`/`AwayTeam`, `GolesL`/`FTHG`, `GolesV`/`FTAG` (y opcionalmente `Cuota1`, `CuotaX`, `Cuota2`).")
+        idx_per = next((i for i, k in enumerate(LIGAS) if LIGAS[k]["codigo"] == "PER"), 0)
+        liga_up = st.selectbox("Liga destino", list(LIGAS), index=idx_per, key="up_liga")
+        fn_up = getattr(st, "file_uploader", None)
+        arc = fn_up("Archivo CSV o Excel", type=["csv", "xlsx", "xls"], key="up_file") if callable(fn_up) else None
+        if arc is not None and st.button("📥 Importar partidos a la base de datos"):
+            with db.sesion() as con:
+                n_imp = data_bot.importar_archivo_usuario(con, arc.getvalue(), arc.name, LIGAS[liga_up]["codigo"])
+            st.cache_data.clear()
+            st.success(f"✅ {n_imp} partidos importados en {liga_up}.")
     if st.button("🧹 Limpiar caché de cálculos"):
         st.cache_data.clear()
         st.rerun()
@@ -299,11 +315,29 @@ with tab1:
             st.warning("Partido entre ligas: el resultado depende del supuesto de fuerza relativa de cada liga "
                        "(ver el panel ⚖️). No hay datos propios para validarlo.")
 
+        fn_alt = getattr(md, "ajuste_altura_peru", None)
+        if callable(fn_alt) and not neutral:
+            info_alt = fn_alt(home, away)
+            if info_alt.get("activo") and info_alt.get("resumen"):
+                st.info(info_alt["resumen"])
+
         # ---- Ganador (todas las ligas) ----
         for col, nombre, i in zip(st.columns(3), ["Local", "Empate", "Visita"], range(3)):
             col.metric(nombre, f"{p_fin[i] * 100:.1f}%")
             col.caption(f"rango {lo[i] * 100:.0f}–{hi[i] * 100:.0f}%")
             col.progress(float(p_fin[i]))
+
+        fn_pa = getattr(md, "beneficio_pago_anticipado_2g", None)
+        pa_info = fn_pa(M, p_fin) if callable(fn_pa) else None
+        if not basico and pa_info and casa_apuestas.startswith(("Betano", "Betsafe")):
+            nom_casa = "Betano" if casa_apuestas.startswith("Betano") else "Betsafe"
+            st.caption(
+                f"⚡ **Ventaja {nom_casa} (Pago Anticipado +2 goles en 1X2):** "
+                f"**{home[:16]}** sube a `{pa_info['prob_h_pa'] * 100:.1f}%` (`+{pa_info['bono_h_pp']:.1f} pp`, "
+                f"cuota justa `{pa_info['cuota_justa_h_pa']:.2f}`) · "
+                f"**{away[:16]}** sube a `{pa_info['prob_a_pa'] * 100:.1f}%` (`+{pa_info['bono_a_pp']:.1f} pp`, "
+                f"cuota justa `{pa_info['cuota_justa_a_pa']:.2f}`)."
+            )
 
         # ---- Goles (todas las ligas) ----
         st.markdown("#### ⚽ Goles")
@@ -354,10 +388,19 @@ with tab1:
 
             if min(o_h, o_d, o_a) > 1:
                 st.markdown("#### 💹 Valor Esperado (EV%) y Gestión de Banca (Kelly 1/4 Conservador)")
+                usar_pa = bool(pa_info and casa_apuestas.startswith(("Betano", "Betsafe")))
+                probs_ev = ([pa_info["prob_h_pa"], float(p_fin[1]), pa_info["prob_a_pa"]]
+                            if usar_pa else list(p_fin))
+                p25_ev = ([min(0.98, float(p25[0]) + pa_info["bono_h_pp"] / 100.0),
+                           float(p25[1]),
+                           min(0.98, float(p25[2]) + pa_info["bono_a_pp"] / 100.0)]
+                          if usar_pa else list(p25))
+                if usar_pa:
+                    st.caption(f"Incluye bono de **Pago Anticipado (+2 goles)** en **{casa_apuestas.split()[0]}** para `1` y `2`.")
                 filas_ev = {}
-                for nom_m, p_m, p25_m, c_m in zip(["Local (1)", "Empate (X)", "Visita (2)"], p_fin, p25, [o_h, o_d, o_a]):
+                for nom_m, p_m, p25_m, c_m in zip(["Local (1)", "Empate (X)", "Visita (2)"], probs_ev, p25_ev, [o_h, o_d, o_a]):
                     res_k = md.calcular_kelly_ev(p_m, p25_m, c_m)
-                    filas_ev[nom_m] = {"Cuota": c_m, "Prob. Modelo %": round(p_m * 100, 1), **res_k}
+                    filas_ev[nom_m] = {"Cuota": c_m, "Prob. Efectiva %": round(p_m * 100, 1), **res_k}
                 st.dataframe(pd.DataFrame(filas_ev).T, use_container_width=True)
 
             st.dataframe(pd.DataFrame({"Probabilidad %": {k: v * 100 for k, v in mk.items()}}).round(1),

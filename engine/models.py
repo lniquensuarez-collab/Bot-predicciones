@@ -10,7 +10,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from .config import ELO_A_LOG, EQUIPOS_INVITADOS, LIGAS
+from .config import ALTITUD_PERU, CALOR_NORTE_PERU, ELO_A_LOG, EQUIPOS_INVITADOS, LIGAS
 from .elo_system import prob_cruzada
 from .features import FEATS
 
@@ -101,11 +101,65 @@ def ajustar_dc(df, fecha_ref, half_life, reg=0.5, p0_prev=None):
             "ha": float(p[2 * n]), "rho": float(p[2 * n + 1]), "c": float(p[2 * n + 2])}
 
 
+def ajuste_altura_peru(h, a):
+    """Calcula el ajuste fisiológico por diferencial de altitud (Altura vs Llano) en clubes peruanos."""
+    if h not in ALTITUD_PERU and a not in ALTITUD_PERU:
+        return {"activo": False, "msnm_h": 0, "msnm_a": 0, "mult_h": 1.0, "mult_a": 1.0, "resumen": ""}
+    mh = int(ALTITUD_PERU.get(h, 150))
+    ma = int(ALTITUD_PERU.get(a, 150))
+    if mh >= 1800 and ma < 1000:
+        f = np.clip((mh - 1500.0) / 2000.0, 0.25, 1.25)
+        mult_h = float(1.0 + 0.09 * f)
+        mult_a = float(1.0 - 0.11 * f)
+        res = (f"🏔️ Altura a favor del local: **{h}** ({mh:,} msnm) recibe a club del Llano "
+               f"(**{a}**, {ma:,} msnm) → Ataque local `+{ (mult_h - 1) * 100:.1f}%`, Visita `{(mult_a - 1) * 100:.1f}%`.")
+        return {"activo": True, "msnm_h": mh, "msnm_a": ma, "mult_h": mult_h, "mult_a": mult_a, "resumen": res}
+    if mh >= 2200 and ma >= 2200:
+        mult_h, mult_a = 0.95, 1.06
+        res = (f"🏔️ Duelo entre clubes de Altura: **{h}** ({mh:,} msnm) vs **{a}** ({ma:,} msnm) → "
+               f"Visitante aclimatado (ventaja geográfica neutralizada: local `-5.0%`, visita `+6.0%`).")
+        return {"activo": True, "msnm_h": mh, "msnm_a": ma, "mult_h": mult_h, "mult_a": mult_a, "resumen": res}
+    if mh < 1000 and ma >= 2200:
+        if h in CALOR_NORTE_PERU:
+            mult_h, mult_a = 1.07, 0.92
+            res = (f"☀️ Calor norteño / Llano: **{h}** ({mh} msnm) recibe a club de Altura (**{a}**, {ma:,} msnm) → "
+                   f"Ataque local `+7.0%`, Visita `-8.0%`.")
+        else:
+            mult_h, mult_a = 1.04, 0.95
+            res = (f"🌊 Llano vs Altura: **{h}** ({mh} msnm) recibe a club de Altura (**{a}**, {ma:,} msnm) → "
+                   f"Ataque local `+4.0%`, Visita `-5.0%`.")
+        return {"activo": True, "msnm_h": mh, "msnm_a": ma, "mult_h": mult_h, "mult_a": mult_a, "resumen": res}
+    res = f"🌊 Duelo en el Llano: **{h}** ({mh} msnm) vs **{a}** ({ma} msnm) → Sin diferencial de altitud."
+    return {"activo": True, "msnm_h": mh, "msnm_a": ma, "mult_h": 1.0, "mult_a": 1.0, "resumen": res}
+
+
+def beneficio_pago_anticipado_2g(M, p_fin):
+    """Calcula la probabilidad efectiva de cobrar en Betano / Betsafe con la regla de 'Pago Anticipado (+2 goles de ventaja)':
+    suma los escenarios donde el equipo toma ventaja de 2 goles (ej. 2-0 o 3-1) pero termina empatando (2-2, 3-3) o perdiendo (2-3)."""
+    p = np.asarray(p_fin, dtype=float)
+    bono_h = float(0.18 * M[2, 2] + 0.26 * M[3, 3] + 0.10 * M[2, 3] + 0.14 * M[3, 4])
+    bono_a = float(0.18 * M[2, 2] + 0.26 * M[3, 3] + 0.10 * M[3, 2] + 0.14 * M[4, 3])
+    ph_pa = min(0.985, float(p[0]) + bono_h)
+    pa_pa = min(0.985, float(p[2]) + bono_a)
+    return {
+        "prob_h_pa": ph_pa,
+        "bono_h_pp": round((ph_pa - float(p[0])) * 100.0, 2),
+        "cuota_justa_h_pa": round(1.0 / max(ph_pa, 1e-6), 2),
+        "prob_a_pa": pa_pa,
+        "bono_a_pp": round((pa_pa - float(p[2])) * 100.0, 2),
+        "cuota_justa_a_pa": round(1.0 / max(pa_pa, 1e-6), 2),
+    }
+
+
 def tasas_dc(m, h, a, neutral=False):
     """Equipos sin historial usan 0 = media de la liga. En cancha neutral no hay ventaja de local."""
     ha = 0.0 if neutral else m["ha"]
     lam = math.exp(m["c"] + ha + m["att"].get(h, 0.0) - m["dfn"].get(a, 0.0))
     mu = math.exp(m["c"] + m["att"].get(a, 0.0) - m["dfn"].get(h, 0.0))
+    if not neutral and (h in ALTITUD_PERU or a in ALTITUD_PERU):
+        aj = ajuste_altura_peru(h, a)
+        lam *= aj["mult_h"]
+        mu *= aj["mult_a"]
     return lam, mu
 
 

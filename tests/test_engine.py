@@ -41,12 +41,36 @@ def sinteticos(codigo, n=700, seed=0, c0=0.30, ha0=0.20):
 def test_catalogo():
     assert {c["codigo"] for c in LIGAS.values()} == {
         "E0", "E1", "D1", "SP1", "I1", "F1", "P1", "N1", "B1", "T1", "SC0", "G1",
-        "BRA", "ARG", "JPN", "CHN", "USA",
+        "PER", "BRA", "ARG", "JPN", "CHN", "USA",
     }
-    assert all(c["fuente"] in ("csv", "xlsx") for c in LIGAS.values())
+    assert all(c["fuente"] in ("csv", "xlsx", "espn") for c in LIGAS.values())
 
 
 def test_parsers():
+    # JSON de ESPN para Perú Liga 1 (per.1)
+    ev_peru = [{
+        "date": "2025-05-10T20:00Z",
+        "competitions": [{
+            "date": "2025-05-10T20:00Z",
+            "status": {"type": {"completed": True, "state": "post"}},
+            "competitors": [
+                {"homeAway": "home", "team": {"name": "Universitario de Deportes"}, "score": "2",
+                 "statistics": [{"name": "shotsOnTarget", "displayValue": "6"},
+                                {"name": "totalShots", "displayValue": "14"},
+                                {"name": "wonCorners", "displayValue": "7"},
+                                {"name": "foulsCommitted", "displayValue": "12"},
+                                {"name": "yellowCards", "displayValue": "2"}]},
+                {"homeAway": "away", "team": {"name": "Alianza Lima"}, "score": "1",
+                 "statistics": [{"name": "shotsOnTarget", "displayValue": "3"},
+                                {"name": "totalShots", "displayValue": "8"},
+                                {"name": "wonCorners", "displayValue": "4"},
+                                {"name": "foulsCommitted", "displayValue": "15"},
+                                {"name": "yellowCards", "displayValue": "3"}]},
+            ],
+        }],
+    }]
+    f_per = data_bot._filas_espn_eventos(ev_peru, "PER")
+    assert len(f_per) == 1 and f_per[0]["local"] == "Universitario" and f_per[0]["xg_l"] > f_per[0]["xg_v"]
     # CSV estilo /mmz4281/
     csv = pd.DataFrame({"Date": ["15/08/2025", "16/08/2025"], "HomeTeam": ["A", "C"], "AwayTeam": ["B", "D"],
                         "FTHG": [2, 0], "FTAG": [1, 0], "FTR": ["H", "D"], "HST": [5, 3], "HC": [6, 4],
@@ -198,6 +222,13 @@ def test_motor():
         assert scan_multi["picante"] is not None and scan_multi["picante"]["Cuota justa combinada"] >= 5.0
         res_int = data_bot.resolver_equipo_internacional("Red Bull Salzburg", {"T1": ["T1_Eq1"]})
         assert res_int["invitado"] and res_int["equipo"] == "RB Salzburg" and res_int["elo_ext"] > 1400
+        # Factor Altura Perú (Cusco 3400 msnm vs Lima 150 msnm) y Pago Anticipado (+2 goles Betano/Betsafe)
+        alt_cusco = md.ajuste_altura_peru("Cusco FC", "Alianza Lima")
+        alt_duelo = md.ajuste_altura_peru("Cienciano", "Cusco FC")
+        assert alt_cusco["activo"] and alt_cusco["mult_h"] > 1.05 and alt_cusco["mult_a"] < 0.92
+        assert alt_duelo["activo"] and alt_duelo["mult_h"] < 1.0 and alt_duelo["mult_a"] > 1.0
+        pa_2g = md.beneficio_pago_anticipado_2g(M, md.probs_1x2(M))
+        assert pa_2g["prob_h_pa"] > md.probs_1x2(M)[0] and pa_2g["bono_h_pp"] > 0.0
 
         # Modo europeo entre ligas
         df2 = db.cargar_partidos("T2", con)

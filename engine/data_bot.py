@@ -195,6 +195,147 @@ def _enriquecer_xg_understat(filas, codigo, temporada):
         pass
 
 
+def _filas_espn_eventos(eventos, codigo):
+    """Convierte eventos JSON del scoreboard de ESPN (ej. per.1 Liga 1 de Perú) al esquema SQLite,
+    extrayendo goles, tiros a puerta, xG calibrado, córners, faltas y tarjetas amarillas/rojas."""
+    out = []
+    for ev in eventos or []:
+        comp = (ev.get("competitions") or [{}])[0]
+        st_type = (comp.get("status") or {}).get("type") or {}
+        if not (st_type.get("completed") is True or st_type.get("state") == "post"):
+            continue
+        comps = comp.get("competitors") or []
+        c_h = next((c for c in comps if c.get("homeAway") == "home"), None)
+        c_a = next((c for c in comps if c.get("homeAway") == "away"), None)
+        if not c_h or not c_a:
+            continue
+        h_raw = (c_h.get("team") or {}).get("name") or (c_h.get("team") or {}).get("displayName")
+        a_raw = (c_a.get("team") or {}).get("name") or (c_a.get("team") or {}).get("displayName")
+        gl = _num(c_h.get("score"))
+        gv = _num(c_a.get("score"))
+        if not h_raw or not a_raw or gl is None or gv is None:
+            continue
+        h = ALIAS_EQUIPOS.get(_norm_nombre(h_raw), str(h_raw).strip())
+        a = ALIAS_EQUIPOS.get(_norm_nombre(a_raw), str(a_raw).strip())
+        f_raw = str(comp.get("date") or ev.get("date") or "")[:10]
+        if len(f_raw) < 10:
+            continue
+        temporada = f_raw[:4]
+
+        def _stat(comp_side, *nombres_stat):
+            for s in comp_side.get("statistics") or []:
+                if s.get("name") in nombres_stat:
+                    v = _num(s.get("displayValue") or s.get("value"))
+                    if v is not None:
+                        return v
+            return None
+
+        sot_l = _stat(c_h, "shotsOnTarget", "shotsOnGoal")
+        sot_v = _stat(c_a, "shotsOnTarget", "shotsOnGoal")
+        sh_l = _stat(c_h, "totalShots", "shots")
+        sh_v = _stat(c_a, "totalShots", "shots")
+        xg_l, xg_v = None, None
+        if sot_l is not None and sot_v is not None:
+            fuera_l = max(0.0, (sh_l - sot_l)) if sh_l is not None else sot_l * 1.4
+            fuera_v = max(0.0, (sh_v - sot_v)) if sh_v is not None else sot_v * 1.4
+            xg_l = round(0.28 * sot_l + 0.04 * fuera_l + 0.12 * int(gl), 3)
+            xg_v = round(0.28 * sot_v + 0.04 * fuera_v + 0.12 * int(gv), 3)
+
+        out.append({
+            "id": f"{codigo}:{f_raw}:{h}:{a}",
+            "tipo": "club",
+            "competicion": codigo,
+            "temporada": temporada,
+            "fecha": f_raw,
+            "local": h,
+            "visita": a,
+            "goles_l": int(gl),
+            "goles_v": int(gv),
+            "tiros_p_l": sot_l,
+            "tiros_p_v": sot_v,
+            "corners_l": _stat(c_h, "wonCorners", "cornerKicks"),
+            "corners_v": _stat(c_a, "wonCorners", "cornerKicks"),
+            "faltas_l": _stat(c_h, "foulsCommitted", "fouls"),
+            "faltas_v": _stat(c_a, "foulsCommitted", "fouls"),
+            "amarillas_l": _stat(c_h, "yellowCards"),
+            "amarillas_v": _stat(c_a, "yellowCards"),
+            "rojas_l": _stat(c_h, "redCards"),
+            "rojas_v": _stat(c_a, "redCards"),
+            "cuota_l": None,
+            "cuota_e": None,
+            "cuota_v": None,
+            "arbitro": None,
+            "xg_l": xg_l,
+            "xg_v": xg_v,
+        })
+    return out
+
+
+def _descargar_historial_espn(slug, codigo, anios=3):
+    """Descarga los últimos `anios` años de una liga desde el endpoint público de ESPN (ej. per.1 para Perú Liga 1)."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import date as _date
+
+    anio_actual = _date.today().year
+    hoy_ymd = _date.today().strftime("%Y%m%d")
+    bimestres = [("0101", "0228"), ("0301", "0430"), ("0501", "0630"),
+                 ("0701", "0831"), ("0901", "1031"), ("1101", "1231")]
+    rangos = []
+    for y in range(anio_actual - max(1, int(anios)) + 1, anio_actual + 1):
+        for ini, fin in bimestres:
+            r_ini = f"{y}{ini}"
+            r_fin = f"{y}{fin}"
+            if r_ini <= hoy_ymd:
+                rangos.append(f"{r_ini}-{min(r_fin, hoy_ymd)}")
+
+    def _pedir(rango):
+        try:
+            url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{slug}/scoreboard?dates={rango}&limit=300"
+            r = requests.get(url, headers=HEADERS, timeout=12)
+            if r.status_code == 200:
+                return _filas_espn_eventos(r.json().get("events", []), codigo)
+        except Exception:
+            pass
+        return []
+
+    filas = []
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        for res in ex.map(_pedir, rangos):
+            filas.extend(res)
+    # Deduplicar por id manteniendo orden cronológico
+    vistos = {}
+    for f in filas:
+        vistos[f["id"]] = f
+    return sorted(vistos.values(), key=lambda x: x["fecha"])
+
+
+def importar_archivo_usuario(con, contenido_bytes, nombre_archivo, codigo_liga):
+    """Permite al usuario subir un CSV o Excel propio (ej. Liga 1 de Perú con cuotas de Betsafe/Betano)."""
+    if str(nombre_archivo).lower().endswith((".xlsx", ".xls")):
+        df = pd.read_excel(io.BytesIO(contenido_bytes))
+    else:
+        df = pd.read_csv(io.BytesIO(contenido_bytes), encoding="latin-1", on_bad_lines="skip")
+    # Soportar tanto nombres en inglés (Date, HomeTeam, AwayTeam, FTHG, FTAG) como español (Fecha, Local, Visita, GolesL, GolesV)
+    mapa_cols = {
+        "Fecha": "Date", "fecha": "Date",
+        "Local": "HomeTeam", "local": "HomeTeam", "Home": "HomeTeam",
+        "Visita": "AwayTeam", "visita": "AwayTeam", "Visitante": "AwayTeam", "Away": "AwayTeam",
+        "GolesL": "FTHG", "goles_l": "FTHG", "HG": "FTHG",
+        "GolesV": "FTAG", "goles_v": "FTAG", "AG": "FTAG",
+        "Cuota1": "B365H", "cuota_l": "B365H",
+        "CuotaX": "B365D", "cuota_e": "B365D",
+        "Cuota2": "B365A", "cuota_v": "B365A",
+    }
+    df = df.rename(columns={k: v for k, v in mapa_cols.items() if k in df.columns and v not in df.columns})
+    temporada = str(pd.Timestamp.today().year)
+    filas = _filas(df, codigo_liga, temporada)
+    if not filas:
+        filas = filas_xlsx(df, codigo_liga, anios=10)
+    n = db.guardar_partidos(con, filas)
+    db.registrar_ingesta(con, f"archivo:{nombre_archivo}", codigo_liga, n)
+    return n
+
+
 def ingestar_ligas(con, nombres, extra_temporadas=0, anios_xlsx=3, progreso=None):
     """Descarga y guarda las ligas indicadas. extra_temporadas añade temporadas europeas anteriores
     (por defecto solo las 2 últimas, p. ej. 2526 y 2627). Devuelve (filas, avisos)."""
@@ -209,11 +350,14 @@ def ingestar_ligas(con, nombres, extra_temporadas=0, anios_xlsx=3, progreso=None
     filas, avisos = [], []
     for k, (nombre, cfg, t) in enumerate(tareas):
         try:
-            if t:
+            if cfg["fuente"] == "csv" and t:
                 d = pd.read_csv(io.BytesIO(_descargar(URL_CSV.format(t=t, c=cfg["codigo"]))),
                                 encoding="latin-1", on_bad_lines="skip")
                 nuevas = _filas(d, cfg["codigo"], t)
                 _enriquecer_xg_understat(nuevas, cfg["codigo"], t)
+            elif cfg["fuente"] == "espn":
+                slug = cfg.get("slug") or ESPN_SLUGS.get(cfg["codigo"], "per.1")
+                nuevas = _descargar_historial_espn(slug, cfg["codigo"], anios=max(2, anios_xlsx))
             else:
                 d = pd.read_excel(io.BytesIO(_descargar(URL_XLSX.format(c=cfg["codigo"]))))
                 nuevas = filas_xlsx(d, cfg["codigo"], anios_xlsx)
@@ -227,7 +371,7 @@ def ingestar_ligas(con, nombres, extra_temporadas=0, anios_xlsx=3, progreso=None
         if progreso:
             progreso((k + 1) / len(tareas), f"{nombre} {t or ''}")
     n = db.guardar_partidos(con, filas)
-    db.registrar_ingesta(con, "football-data.co.uk", ", ".join(cfg_n for cfg_n in nombres), n)
+    db.registrar_ingesta(con, "football-data.co.uk+espn", ", ".join(cfg_n for cfg_n in nombres), n)
     return n, avisos
 
 def obtener_equipos_vigentes(con, competicion):
@@ -328,6 +472,30 @@ ALIAS_EQUIPOS = {
     "red bull salzburg": "RB Salzburg",
     "salzburg": "RB Salzburg",
     "red star belgrade": "Crvena Zvezda",
+    "universitario de deportes": "Universitario",
+    "club universitario de deportes": "Universitario",
+    "alianza lima": "Alianza Lima",
+    "sporting cristal": "Sporting Cristal",
+    "fbc melgar": "Melgar",
+    "melgar": "Melgar",
+    "asociacion deportiva tarma": "ADT",
+    "adt tarma": "ADT",
+    "deportivo garcilaso": "Deportivo Garcilaso",
+    "cusco": "Cusco FC",
+    "cienciano": "Cienciano",
+    "sport huancayo": "Sport Huancayo",
+    "chankas cyc": "Los Chankas",
+    "los chankas": "Los Chankas",
+    "universidad tecnica de cajamarca": "UTC",
+    "utc cajamarca": "UTC",
+    "comerciantes unidos": "Comerciantes Unidos",
+    "alianza atletico": "Alianza Atletico",
+    "atletico grau": "Atletico Grau",
+    "sport boys": "Sport Boys",
+    "universidad cesar vallejo": "Cesar Vallejo",
+    "cesar vallejo": "Cesar Vallejo",
+    "carlos a mannucci": "Mannucci",
+    "deportivo binacional": "Binacional",
 }
 
 

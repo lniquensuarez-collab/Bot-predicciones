@@ -38,10 +38,46 @@ ESPN_SLUGS = {
     "G1": "gre.1",
     "BRA": "bra.1",
     "ARG": "arg.1",
+    "PER": "per.1",
     "JPN": "jpn.1",
     "CHN": "chn.1",
     "USA": "usa.1",
 }
+
+# Altitud de estadios en la Liga 1 de Perú (metros sobre el nivel del mar) para el ajuste Altura vs Llano
+ALTITUD_PERU = {
+    "Universitario": 150,
+    "Alianza Lima": 150,
+    "Sporting Cristal": 150,
+    "Sport Boys": 30,
+    "Deportivo Municipal": 150,
+    "Cantolao": 30,
+    "Universidad Cesar Vallejo": 35,
+    "Cesar Vallejo": 35,
+    "Carlos A. Mannucci": 35,
+    "Mannucci": 35,
+    "Alianza Atletico": 60,
+    "Atletico Grau": 30,
+    "Juan Pablo II": 30,
+    "Melgar": 2335,
+    "FBC Melgar": 2335,
+    "Alianza Universidad": 1894,
+    "UTC": 2750,
+    "UTC Cajamarca": 2750,
+    "Comerciantes Unidos": 2637,
+    "Ayacucho FC": 2761,
+    "Ayacucho": 2761,
+    "Los Chankas": 2926,
+    "Chankas CYC": 2926,
+    "ADT": 3053,
+    "ADT Tarma": 3053,
+    "Sport Huancayo": 3259,
+    "Cienciano": 3400,
+    "Cusco FC": 3400,
+    "Deportivo Garcilaso": 3400,
+    "Binacional": 3825,
+}
+CALOR_NORTE_PERU = {"Alianza Atletico", "Atletico Grau", "Juan Pablo II"}
 
 # Torneos internacionales para búsqueda automática de partidos del día y cruces entre ligas
 TORNEOS_INTERNACIONALES = {
@@ -141,6 +177,7 @@ LIGAS = {
     "🇹🇷 Turquía · Süper Lig": dict(codigo="T1", fuente="csv", europa=True, fuerza=-150),
     "🏴󠁧󠁢󠁳󠁣󠁴󠁿 Escocia · Premiership": dict(codigo="SC0", fuente="csv", europa=True, fuerza=-160),
     "🇬🇷 Grecia · Super League": dict(codigo="G1", fuente="csv", europa=True, fuerza=-145),
+    "🇵🇪 Perú · Liga 1": dict(codigo="PER", fuente="espn", slug="per.1", europa=False, fuerza=-115),
     "🇧🇷 Brasil": dict(codigo="BRA", fuente="xlsx", europa=False, fuerza=0),
     "🇦🇷 Argentina": dict(codigo="ARG", fuente="xlsx", europa=False, fuerza=0),
     "🇯🇵 Japón": dict(codigo="JPN", fuente="xlsx", europa=False, fuerza=0),
