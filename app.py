@@ -19,7 +19,7 @@ from engine import features as ft
 from engine import models as md
 
 # En Streamlit Cloud, al actualizar por Git sin reiniciar contenedor, recarga submódulos si quedaron en caché
-if (not hasattr(ft.Estado, "arbitros_disponibles")
+if (not hasattr(ft.Estado, "resumen_xg")
         or not hasattr(md, "mercados_asiaticos")
         or not hasattr(bt, "simular_apuestas")
         or not hasattr(data_bot, "buscar_partidos_del_dia")):
@@ -51,7 +51,7 @@ def ejecutar(fn, *args, **kw):
 
 
 @st.cache_data(show_spinner="Preparando liga (Elo, features, modelos)...")
-def preparar_liga(codigo, half_life, _version="v14.2"):
+def preparar_liga(codigo, half_life, _version="v14.3"):
     df = db.cargar_partidos(codigo)
     if len(df) < 200:
         return None
@@ -317,6 +317,30 @@ with tab1:
             st.dataframe(pd.DataFrame({"Probabilidad %": {k: mk[k] * 100 for k in solo_goles}}).round(1),
                          use_container_width=True)
         else:
+            fn_rxg_h = getattr(est_h, "resumen_xg", None)
+            fn_rxg_a = getattr(est_a, "resumen_xg", None)
+            if callable(fn_rxg_h) and callable(fn_rxg_a):
+                xgh_st, xga_st = fn_rxg_h(home), fn_rxg_a(away)
+                if not np.isnan(xgh_st["xGF"]) and not np.isnan(xga_st["xGF"]):
+                    df_xg = pd.DataFrame([
+                        {
+                            "Equipo": home[:18],
+                            "xG a favor (EWMA)": round(xgh_st["xGF"], 2),
+                            "xG en contra (EWMA)": round(xgh_st["xGA"], 2),
+                            "Goles reales (EWMA)": round(xgh_st["GF"], 2),
+                            "Efectividad vs xG": f"{xgh_st['suerte']:+.2f}",
+                        },
+                        {
+                            "Equipo": away[:18],
+                            "xG a favor (EWMA)": round(xga_st["xGF"], 2),
+                            "xG en contra (EWMA)": round(xga_st["xGA"], 2),
+                            "Goles reales (EWMA)": round(xga_st["GF"], 2),
+                            "Efectividad vs xG": f"{xga_st['suerte']:+.2f}",
+                        },
+                    ]).set_index("Equipo")
+                    st.caption("Calidad de ocasiones reciente (xG post-partido integrado en Dixon-Coles y en el Clasificador):")
+                    st.dataframe(df_xg, use_container_width=True)
+
             comp = pd.DataFrame({"Local %": [p_elo[0], p_dc[0], p_lr[0]], "Empate %": [p_elo[1], p_dc[1], p_lr[1]],
                                  "Visita %": [p_elo[2], p_dc[2], p_lr[2]]},
                                 index=["Solo Elo", "Dixon-Coles", "Clasificador"]) * 100
@@ -524,9 +548,17 @@ with tab2:
         est = P_main["estado"]
         with db.sesion() as con:
             eqs = data_bot.obtener_equipos_vigentes(con, LIGAS[liga_principal]["codigo"])
-        rk = pd.DataFrame({"Equipo": eqs, "Elo": [round(est.elo.rating(t)) for t in eqs],
-                           "Partidos": [est.n.get(t, 0) for t in eqs],
-                           "Forma (últ. 5, pts)": [sum(est.pts.get(t, [])[-5:]) for t in eqs]})
+        fn_rxg = getattr(est, "resumen_xg", None)
+        rk_data = {
+            "Equipo": eqs,
+            "Elo": [round(est.elo.rating(t)) for t in eqs],
+            "Partidos": [est.n.get(t, 0) for t in eqs],
+            "Forma (últ. 5, pts)": [sum(est.pts.get(t, [])[-5:]) for t in eqs],
+        }
+        if callable(fn_rxg):
+            rk_data["xGF (EWMA)"] = [round(fn_rxg(t)["xGF"], 2) for t in eqs]
+            rk_data["xGA (EWMA)"] = [round(fn_rxg(t)["xGA"], 2) for t in eqs]
+        rk = pd.DataFrame(rk_data)
         rk = rk.sort_values("Elo", ascending=False).reset_index(drop=True)
         rk.index += 1
         st.caption("El Elo solo es comparable dentro de la misma liga.")

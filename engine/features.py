@@ -5,7 +5,7 @@ import pandas as pd
 
 from .elo_system import EloSystem
 
-FEATS = ["elo_diff", "att_diff", "def_diff", "sot_diff", "cor_diff", "form_diff", "rest_diff"]
+FEATS = ["elo_diff", "att_diff", "def_diff", "xg_diff", "xga_diff", "sot_diff", "cor_diff", "form_diff", "rest_diff"]
 
 
 def _f(r, k):
@@ -66,6 +66,15 @@ class Estado:
         c = self.g_count.get((lado, stat), 0)
         return self.g_sum.get((lado, stat), 0.0) / c if c > 0 else np.nan
 
+    def resumen_xg(self, t):
+        """Devuelve promedios recientes (EWMA global) de xGF, xGA, GF, GC y el diferencial de suerte (GF - xGF)."""
+        xgf = self.ewma.get((t, "ALL", "xGF"), np.nan)
+        xga = self.ewma.get((t, "ALL", "xGA"), np.nan)
+        gf = self.ewma.get((t, "ALL", "GF"), np.nan)
+        gc = self.ewma.get((t, "ALL", "GC"), np.nan)
+        suerte = (gf - xgf) if (not np.isnan(gf) and not np.isnan(xgf)) else 0.0
+        return {"xGF": xgf, "xGA": xga, "GF": gf, "GC": gc, "suerte": float(suerte)}
+
     def features(self, h, a, fecha):
         def diff(s):
             vh = self.valor(h, "H", s)
@@ -85,7 +94,9 @@ class Estado:
 
         return {
             "elo_diff": self.elo.rating(h) - self.elo.rating(a),
-            "att_diff": diff("GF"), "def_diff": diff("GC"), "sot_diff": diff("ST"), "cor_diff": diff("C"),
+            "att_diff": diff("GF"), "def_diff": diff("GC"),
+            "xg_diff": diff("xGF"), "xga_diff": diff("xGA"),
+            "sot_diff": diff("ST"), "cor_diff": diff("C"),
             "form_diff": sum(self.pts.get(h, [])[-5:]) - sum(self.pts.get(a, [])[-5:]),
             "rest_diff": descanso(h) - descanso(a),
             "n_prev": min(self.n.get(h, 0), self.n.get(a, 0)),
@@ -103,9 +114,12 @@ class Estado:
 
         h, a = r["HomeTeam"], r["AwayTeam"]
         gl, gv = float(r["FTHG"]), float(r["FTAG"])
-        vh = {"GF": gl, "GC": gv, "ST": _f(r, "HST"), "STA": _f(r, "AST"), "C": _f(r, "HC"), "CA": _f(r, "AC"),
+        xgh, xga = _f(r, "xGH"), _f(r, "xGA")
+        vh = {"GF": gl, "GC": gv, "xGF": gl if np.isnan(xgh) else xgh, "xGA": gv if np.isnan(xga) else xga,
+              "ST": _f(r, "HST"), "STA": _f(r, "AST"), "C": _f(r, "HC"), "CA": _f(r, "AC"),
               "F": _f(r, "HF"), "FA": _f(r, "AF"), "Y": _f(r, "HY"), "YA": _f(r, "AY"), "R": _f(r, "HR"), "RA": _f(r, "AR")}
-        va = {"GF": gv, "GC": gl, "ST": _f(r, "AST"), "STA": _f(r, "HST"), "C": _f(r, "AC"), "CA": _f(r, "HC"),
+        va = {"GF": gv, "GC": gl, "xGF": gv if np.isnan(xga) else xga, "xGA": gl if np.isnan(xgh) else xgh,
+              "ST": _f(r, "AST"), "STA": _f(r, "HST"), "C": _f(r, "AC"), "CA": _f(r, "HC"),
               "F": _f(r, "AF"), "FA": _f(r, "HF"), "Y": _f(r, "AY"), "YA": _f(r, "HY"), "R": _f(r, "AR"), "RA": _f(r, "HR")}
 
         for t, lado, vals in ((h, "H", vh), (a, "A", va)):

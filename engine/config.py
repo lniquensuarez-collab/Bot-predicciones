@@ -11,6 +11,16 @@ URL_XLSX = "https://football-data.co.uk/new/{c}.xlsx"
 URL_FIXTURES_CSV = "https://www.football-data.co.uk/fixtures.csv"
 URL_FIXTURES_NEW = "https://www.football-data.co.uk/new_league_fixtures.csv"
 URL_ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/soccer/{slug}/scoreboard?dates={ymd}"
+URL_UNDERSTAT = "https://understat.com/getLeagueData/{slug}/{anio}"
+
+# Ligas con xG tiro-a-tiro en Understat
+UNDERSTAT_SLUGS = {
+    "E0": "EPL",
+    "SP1": "La_liga",
+    "D1": "Bundesliga",
+    "I1": "Serie_A",
+    "F1": "Ligue_1",
+}
 
 # Slugs públicos de ESPN (sin API key) para consultar el calendario diario de nuestras 13 ligas
 ESPN_SLUGS = {

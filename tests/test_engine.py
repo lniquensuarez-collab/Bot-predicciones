@@ -128,6 +128,8 @@ def test_motor():
 
         feats, est = construir_features(df)
         assert feats["n_prev"].iloc[0] == 0 and feats["elo_diff"].iloc[0] == 0
+        assert "xg_diff" in feats.columns and "xga_diff" in feats.columns
+        assert not np.isnan(est.resumen_xg("T1_Eq1")["xGF"])
         db.guardar_elo(con, "T1", est.elo.ratings, est.n)
 
         fun, p0, _, _ = md.preparar_dc(df, df["Date"].max(), 365)

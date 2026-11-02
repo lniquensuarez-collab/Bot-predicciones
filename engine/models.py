@@ -17,9 +17,10 @@ ETIQ = {"H": 0, "D": 1, "A": 2}
 
 
 # ----------------------------- Dixon-Coles -----------------------------------
-def preparar_dc(df, fecha_ref, half_life, reg=0.5):
+def preparar_dc(df, fecha_ref, half_life, reg=0.5, peso_xg=0.35):
     """Función objetivo (valor + gradiente analítico). Parámetros: ataque(n), defensa(n), ventaja local,
-    rho (marcadores bajos) y c (intercepto = nivel de goles de la liga). Separada para poder testear el gradiente."""
+    rho (marcadores bajos) y c (intercepto = nivel de goles de la liga).
+    Si existen xGH/xGA post-partido, suaviza los goles observados (65% goles + 35% xG) para reducir el factor suerte."""
     dias = (fecha_ref - df["Date"]).dt.days.to_numpy(float).clip(min=0)
     w = np.exp(-np.log(2) / half_life * dias)
     d = df[w > 1e-4]
@@ -29,9 +30,19 @@ def preparar_dc(df, fecha_ref, half_life, reg=0.5):
     idx = {t: i for i, t in enumerate(equipos)}
     n = len(equipos)
     hi, ai = d["HomeTeam"].map(idx).to_numpy(), d["AwayTeam"].map(idx).to_numpy()
-    x, y = d["FTHG"].to_numpy(float), d["FTAG"].to_numpy(float)
-    m00, m01 = (x == 0) & (y == 0), (x == 0) & (y == 1)
-    m10, m11 = (x == 1) & (y == 0), (x == 1) & (y == 1)
+    x_gol, y_gol = d["FTHG"].to_numpy(float), d["FTAG"].to_numpy(float)
+    m00, m01 = (x_gol == 0) & (y_gol == 0), (x_gol == 0) & (y_gol == 1)
+    m10, m11 = (x_gol == 1) & (y_gol == 0), (x_gol == 1) & (y_gol == 1)
+
+    if peso_xg > 0 and "xGH" in d.columns and "xGA" in d.columns:
+        xgh = pd.to_numeric(d["xGH"], errors="coerce").to_numpy(float)
+        xga = pd.to_numeric(d["xGA"], errors="coerce").to_numpy(float)
+        ok_xg = ~np.isnan(xgh) & ~np.isnan(xga)
+        x = np.where(ok_xg, (1.0 - peso_xg) * x_gol + peso_xg * xgh, x_gol)
+        y = np.where(ok_xg, (1.0 - peso_xg) * y_gol + peso_xg * xga, y_gol)
+    else:
+        x, y = x_gol, y_gol
+
     lgx, lgy = gammaln(x + 1), gammaln(y + 1)
 
     def fun(p):

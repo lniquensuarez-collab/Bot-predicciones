@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS partidos (
     tiros_l REAL, tiros_v REAL, tiros_p_l REAL, tiros_p_v REAL, corners_l REAL, corners_v REAL,
     cuota_l REAL, cuota_e REAL, cuota_v REAL,
     faltas_l REAL, faltas_v REAL, amarillas_l REAL, amarillas_v REAL, rojas_l REAL, rojas_v REAL,
-    arbitro TEXT
+    arbitro TEXT, xg_l REAL, xg_v REAL
 );
 CREATE INDEX IF NOT EXISTS idx_partidos_comp_fecha ON partidos(competicion, fecha);
 CREATE TABLE IF NOT EXISTS elo_actual (
@@ -31,13 +31,13 @@ CREATE TABLE IF NOT EXISTS ingestas (
 COLS = ["id", "tipo", "competicion", "temporada", "fecha", "local", "visita", "goles_l", "goles_v",
         "resultado", "tiros_l", "tiros_v", "tiros_p_l", "tiros_p_v", "corners_l", "corners_v",
         "cuota_l", "cuota_e", "cuota_v", "faltas_l", "faltas_v", "amarillas_l", "amarillas_v",
-        "rojas_l", "rojas_v", "arbitro"]
+        "rojas_l", "rojas_v", "arbitro", "xg_l", "xg_v"]
 
 MAPA = {"fecha": "Date", "local": "HomeTeam", "visita": "AwayTeam", "goles_l": "FTHG", "goles_v": "FTAG",
         "resultado": "FTR", "tiros_l": "HS", "tiros_v": "AS", "tiros_p_l": "HST", "tiros_p_v": "AST",
         "corners_l": "HC", "corners_v": "AC", "faltas_l": "HF", "faltas_v": "AF", "amarillas_l": "HY",
         "amarillas_v": "AY", "rojas_l": "HR", "rojas_v": "AR", "temporada": "Season", "competicion": "Competicion",
-        "arbitro": "Referee"}
+        "arbitro": "Referee", "xg_l": "xGH", "xg_v": "xGA"}
 
 
 def conectar(path=None):
@@ -142,8 +142,27 @@ def cargar_partidos(competicion, con=None):
     df = df.rename(columns=MAPA)
     df[["mH", "mD", "mA"]] = prob
     df["Date"] = pd.to_datetime(df["Date"])
-    for c in ["HS", "AS", "HST", "AST", "HC", "AC", "HF", "AF", "HY", "AY", "HR", "AR"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+    for c in ["HS", "AS", "HST", "AST", "HC", "AC", "HF", "AF", "HY", "AY", "HR", "AR", "xGH", "xGA"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        else:
+            df[c] = np.nan
+
+    # Si faltan xGH/xGA pero hay tiros a puerta (HST/AST), calcula xG empírico por calidad de volumen ofensivo
+    # calibrado a la media de goles de la liga para no sesgar el intercepto de Dixon-Coles
+    falta_xg = df["xGH"].isna() & df["HST"].notna() & df["AST"].notna()
+    if falta_xg.any():
+        hs_resto = np.maximum(df["HS"].fillna(df["HST"] * 2.6) - df["HST"], 0.0)
+        as_resto = np.maximum(df["AS"].fillna(df["AST"] * 2.6) - df["AST"], 0.0)
+        hc_val = df["HC"].fillna(5.0)
+        ac_val = df["AC"].fillna(4.5)
+        raw_h = 0.28 * df["HST"] + 0.04 * hs_resto + 0.015 * hc_val
+        raw_a = 0.28 * df["AST"] + 0.04 * as_resto + 0.015 * ac_val
+        escala_h = float(df["FTHG"].mean() / max(raw_h.mean(), 1e-6))
+        escala_a = float(df["FTAG"].mean() / max(raw_a.mean(), 1e-6))
+        df.loc[falta_xg, "xGH"] = (raw_h[falta_xg] * escala_h).round(3)
+        df.loc[falta_xg, "xGA"] = (raw_a[falta_xg] * escala_a).round(3)
+
     return df.reset_index(drop=True)
 
 
@@ -162,5 +181,6 @@ def total_partidos(con):
 def resumen_por_liga(con):
     return pd.read_sql_query(
         "SELECT competicion AS Liga, COUNT(*) AS Partidos, MIN(fecha) AS Desde, MAX(fecha) AS Hasta, "
-        "COUNT(tiros_p_l) AS 'Con tiros a puerta', COUNT(faltas_l) AS 'Con faltas', COUNT(amarillas_l) AS 'Con tarjetas', COUNT(cuota_l) AS 'Con cuotas' "
+        "COUNT(xg_l) AS 'Con xG', COUNT(tiros_p_l) AS 'Con tiros a puerta', COUNT(faltas_l) AS 'Con faltas', "
+        "COUNT(amarillas_l) AS 'Con tarjetas', COUNT(cuota_l) AS 'Con cuotas' "
         "FROM partidos GROUP BY competicion ORDER BY competicion", con)
