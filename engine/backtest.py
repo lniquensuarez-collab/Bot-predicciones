@@ -31,38 +31,44 @@ def correr_backtest(df, feats, half_life, w_dc, n_test, bloque_dias=21, progreso
     bloque_id = ((df["Date"] - df["Date"].iloc[ini]).dt.days // bloque_dias).to_numpy()
     ok_train = (feats["n_prev"] >= 5).to_numpy()
     ids = np.unique(bloque_id[ini:])
-    P_dc, P_lr, P_base, idxs = [], [], [], []
+    P_dc, P_lr, P_base, P_elo, idxs = [], [], [], [], []
+    dc_prev = None
+    fechas = df["Date"].to_numpy()
+    homes = df["HomeTeam"].to_numpy()
+    aways = df["AwayTeam"].to_numpy()
+    elo_diffs = feats["elo_diff"].to_numpy()
 
-for k, b in enumerate(ids):
+    for k, b in enumerate(ids):
         te = np.where(bloque_id == b)[0]
         te = te[te >= ini]
         corte = te[0]
-        
+
         fecha_ref = df["Date"].iloc[corte]
-        dc = ajustar_dc(df.iloc[:corte], fecha_ref, half_life)
+        dc = ajustar_dc(df.iloc[:corte], fecha_ref, half_life, p0_prev=dc_prev)
+        dc_prev = dc
         tr = np.where(ok_train[:corte])[0]
-        
+
         # Recalcular el decaimiento relativo al día del corte del backtest
         dias = (fecha_ref - df["Date"].iloc[tr]).dt.days.to_numpy(float).clip(min=0)
         w = np.exp(-np.log(2) / half_life * dias)
-        
+
         lr = entrenar_lr(feats.iloc[tr][FEATS], y_all[tr], sample_weight=w)
-        
+        freq_base = np.bincount(y_all[:corte], minlength=3) / corte
+        tasa_emp = float(freq_base[1])
+
         for i in te:
-            lam, mu = tasas_dc(dc, df["HomeTeam"].iloc[i], df["AwayTeam"].iloc[i])
+            lam, mu = tasas_dc(dc, homes[i], aways[i])
             P_dc.append(probs_1x2(matriz(lam, mu, dc["rho"])))
         P_lr.append(predecir_lr(lr, feats.iloc[te][FEATS]))
-        P_base.extend([np.bincount(y_all[:corte], minlength=3) / corte] * len(te))
+        P_base.extend([freq_base] * len(te))
+        diff_b = elo_diffs[te] + ventaja_elo
+        P_elo.append(esperado_a_1x2(1.0 / (1.0 + 10.0 ** (-diff_b / 400.0)), tasa_empate=tasa_emp))
         idxs.extend(te)
-        if progreso:
-            progreso((k + 1) / len(ids))
-        
         if progreso:
             progreso((k + 1) / len(ids))
 
     idxs = np.array(idxs)
-    P_dc, P_lr = np.array(P_dc), np.vstack(P_lr)
-    diff = feats["elo_diff"].to_numpy()[idxs] + ventaja_elo
-    return {"y": y_all[idxs], "base": np.array(P_base), "elo": esperado_a_1x2(1 / (1 + 10 ** (-diff / 400))),
+    P_dc, P_lr, P_elo = np.array(P_dc), np.vstack(P_lr), np.vstack(P_elo)
+    return {"y": y_all[idxs], "base": np.array(P_base), "elo": P_elo,
             "dc": P_dc, "lr": P_lr, "ens": w_dc * P_dc + (1 - w_dc) * P_lr,
             "mercado": df[["mH", "mD", "mA"]].iloc[idxs].to_numpy()}

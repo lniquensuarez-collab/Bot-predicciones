@@ -73,7 +73,9 @@ class FakeSt:
     def button(self, label, **k): return label.startswith("🚀")
     def metric(self, label, value, *a, **k): self._rec("metric", label)
     def markdown(self, t, *a, **k): self._rec("markdown", t)
-    def dataframe(self, d, *a, **k): self._rec("dataframe", getattr(d, "to_string", lambda: str(d))())
+    def dataframe(self, d, *a, **k):
+        base = getattr(d, "data", d)
+        self._rec("dataframe", getattr(base, "to_string", lambda: str(base))())
 
     def __getattr__(self, nombre):
         return lambda *a, **k: self._rec(nombre, *a)
@@ -136,6 +138,8 @@ def test_partido_entre_ligas():
 
 
 if __name__ == "__main__":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     preparar_db()
     for f in (test_modo_completo, test_modo_basico, test_partido_entre_ligas):
         f()

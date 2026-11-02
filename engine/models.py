@@ -73,9 +73,15 @@ def preparar_dc(df, fecha_ref, half_life, reg=0.5):
     return fun, p0, bounds, equipos
 
 
-def ajustar_dc(df, fecha_ref, half_life, reg=0.5):
+def ajustar_dc(df, fecha_ref, half_life, reg=0.5, p0_prev=None):
     fun, p0, bounds, equipos = preparar_dc(df, fecha_ref, half_life, reg)
     n = len(equipos)
+    if p0_prev is not None:
+        p0[:n] = [p0_prev["att"].get(t, 0.0) for t in equipos]
+        p0[n:2 * n] = [p0_prev["dfn"].get(t, 0.0) for t in equipos]
+        p0[2 * n] = float(p0_prev.get("ha", p0[2 * n]))
+        p0[2 * n + 1] = float(np.clip(p0_prev.get("rho", 0.0), -0.29, 0.29))
+        p0[2 * n + 2] = float(p0_prev.get("c", p0[2 * n + 2]))
     p = minimize(fun, p0, jac=True, method="L-BFGS-B", bounds=bounds, options={"maxiter": 400}).x
     att, dfn = p[:n] - p[:n].mean(), p[n:2 * n] - p[n:2 * n].mean()
     return {"att": dict(zip(equipos, att)), "dfn": dict(zip(equipos, dfn)),
@@ -104,10 +110,11 @@ def tasas_cruzadas(m_h, m_a, h, a, delta_h, delta_a, neutral=False):
 def matriz(lam, mu, rho, k=MAX_GOLES):
     g = np.arange(k + 1)
     M = np.outer(poisson.pmf(g, lam), poisson.pmf(g, mu))
-    M[0, 0] *= 1 - lam * mu * rho
-    M[0, 1] *= 1 + lam * rho
-    M[1, 0] *= 1 + mu * rho
-    M[1, 1] *= 1 - rho
+    M[0, 0] *= max(1e-6, 1.0 - lam * mu * rho)
+    M[0, 1] *= max(1e-6, 1.0 + lam * rho)
+    M[1, 0] *= max(1e-6, 1.0 + mu * rho)
+    M[1, 1] *= max(1e-6, 1.0 - rho)
+    M = np.clip(M, 0.0, None)
     return M / M.sum()
 
 
@@ -150,11 +157,19 @@ def entrenar_produccion(df, feats, half_life):
     
     return dc, entrenar_lr(feats.loc[ok, FEATS], y[ok], sample_weight=w)
 
-def dispersion_nb(total):
-    s = total.dropna()
-    if len(s) < 30:
+def dispersion_nb(total, weights=None, min_muestras=15):
+    s = pd.Series(total).dropna()
+    if len(s) < min_muestras:
         return 1e6
-    mu, var = s.mean(), s.var()
+    vals = s.to_numpy(float)
+    if weights is not None:
+        w = np.asarray(weights, dtype=float)[s.index] if hasattr(s, "index") and len(weights) == len(total) else np.asarray(weights, dtype=float)
+        w = w / w.sum()
+        mu = float(np.sum(w * vals))
+        denom = 1.0 - float(np.sum(w ** 2))
+        var = float(np.sum(w * (vals - mu) ** 2)) / max(denom, 1e-6)
+    else:
+        mu, var = float(vals.mean()), float(vals.var(ddof=1))
     return mu * mu / (var - mu) if var > mu else 1e6
 
 

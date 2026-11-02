@@ -1,3 +1,4 @@
+# Actualizacion de imports
 # ==============================================================================
 # 📱 ULTIMATE AI V14 - Ligas de clubes (football-data.co.uk) + modo europeo
 # Ejecutar:  streamlit run app.py
@@ -79,7 +80,9 @@ with db.sesion() as con:
 if not st.session_state.get("refresco_faltas"):
     st.session_state["refresco_faltas"] = True
     with db.sesion() as con:
-        r = con.execute("SELECT COUNT(*), COUNT(faltas_l) FROM partidos WHERE competicion IN ('E0','E1','D1','SP1','I1')").fetchone()
+        cods_csv = tuple(c["codigo"] for c in LIGAS.values() if c["fuente"] == "csv")
+        placeholders = ",".join("?" * len(cods_csv))
+        r = con.execute(f"SELECT COUNT(*), COUNT(faltas_l) FROM partidos WHERE competicion IN ({placeholders})", cods_csv).fetchone()
         if r[0] > 0 and r[1] == 0:
             pend = [n for n, c in LIGAS.items() if c["fuente"] == "csv"]
             with st.spinner("Actualizando datos para incluir faltas y tarjetas..."):
@@ -171,15 +174,18 @@ with tab1:
         basico = not any(disp.values())
 
         if cross:
+            tasa_emp = float(((dh["FTR"] == "D").mean() + (da["FTR"] == "D").mean()) / 2.0)
             lam, mu, rho = md.tasas_cruzadas(P_h["dc"], P_a["dc"], home, away,
                                              fz_h * ELO_A_LOG, fz_a * ELO_A_LOG, neutral)
-            p_elo = prob_cruzada(est_h.elo.rating(home) + fz_h, est_a.elo.rating(away) + fz_a, neutral)
+            p_elo = prob_cruzada(est_h.elo.rating(home) + fz_h, est_a.elo.rating(away) + fz_a,
+                                 neutral, tasa_empate=tasa_emp)
         else:
+            tasa_emp = float((dh["FTR"] == "D").mean())
             lam, mu = md.tasas_dc(P_h["dc"], home, away, neutral)
             rho = P_h["dc"]["rho"]
-            p_elo = est_h.elo.prob_1x2(home, away, neutral)
-        lam *= (1 + att_h / 100) * (1 + def_a / 100)
-        mu *= (1 + att_a / 100) * (1 + def_h / 100)
+            p_elo = est_h.elo.prob_1x2(home, away, neutral, tasa_empate=tasa_emp)
+        lam *= math.exp((att_h + def_a) / 100.0)
+        mu *= math.exp((att_a + def_h) / 100.0)
         M = md.matriz(lam, mu, rho)
         p_dc = md.probs_1x2(M)
 
@@ -197,26 +203,34 @@ with tab1:
         else:
             p_fin, usado = w_dc * p_dc + (1 - w_dc) * p_lr, "Dixon-Coles + clasificador"
 
-        # --- INCERTIDUMBRE ADAPTATIVA (Monte Carlo) ---
+        # --- INCERTIDUMBRE ADAPTATIVA (Monte Carlo sin sesgo log-normal) ---
         n_h = est_h.n.get(home, 0)
         n_a = est_a.n.get(away, 0)
-        
+
         N_REF = 38.0
         f_h = float(np.clip(math.sqrt(N_REF / max(n_h, 5)), 0.7, 2.0))
         f_a = float(np.clip(math.sqrt(N_REF / max(n_a, 5)), 0.7, 2.0))
-        
-        sigma_lam = sigma * math.sqrt((f_h**2 + f_a**2) / 2.0)
-        sigma_mu  = sigma * math.sqrt((f_a**2 + f_h**2) / 2.0)
+
+        # Incertidumbre asimétrica: pondera 70% al equipo atacante y 30% al defensor
+        sigma_lam = sigma * math.sqrt(0.7 * f_h**2 + 0.3 * f_a**2)
+        sigma_mu  = sigma * math.sqrt(0.7 * f_a**2 + 0.3 * f_h**2)
+        drift_lam = -0.5 * sigma_lam**2
+        drift_mu  = -0.5 * sigma_mu**2
 
         rng = np.random.default_rng(0)
         s_1x2, s_o25 = [], []
+        p_sec = p_elo if (cross or neutral) else p_lr
         for _ in range(500):
-            pert_lam = lam * math.exp(rng.normal(0, sigma_lam))
-            pert_mu  = mu  * math.exp(rng.normal(0, sigma_mu))
+            pert_lam = lam * math.exp(rng.normal(drift_lam, sigma_lam))
+            pert_mu  = mu  * math.exp(rng.normal(drift_mu, sigma_mu))
             Ms = md.matriz(pert_lam, pert_mu, rho)
-            s_1x2.append(md.probs_1x2(Ms))
+            p_dc_s = md.probs_1x2(Ms)
+            if escenario:
+                s_1x2.append(p_dc_s)
+            else:
+                s_1x2.append(w_dc * p_dc_s + (1.0 - w_dc) * p_sec)
             s_o25.append(md.mercados_goles(Ms)["Over 2.5"])
-        
+
         s_1x2 = np.array(s_1x2)
         lo, hi = np.percentile(s_1x2, 10, axis=0), np.percentile(s_1x2, 90, axis=0)
 
@@ -255,9 +269,9 @@ with tab1:
                                  "Visita %": [p_elo[2], p_dc[2], p_lr[2]]},
                                 index=["Solo Elo", "Dixon-Coles", "Clasificador"]) * 100
             if min(o_h, o_d, o_a) > 1:
-                inv = 1 / np.array([o_h, o_d, o_a])
-                comp.loc["Mercado (sin margen)"] = inv / inv.sum() * 100
-                comp.loc["Diferencia vs mercado (pp)"] = p_fin * 100 - inv / inv.sum() * 100
+                p_mkt = db.desmargenar_cuotas([o_h, o_d, o_a])
+                comp.loc["Mercado (sin margen)"] = p_mkt * 100
+                comp.loc["Diferencia vs mercado (pp)"] = (p_fin - p_mkt) * 100
             st.markdown("#### 📊 Comparación de modelos")
             st.dataframe(comp.round(1).fillna("-"), use_container_width=True)
 
@@ -275,25 +289,41 @@ with tab1:
             for col, (sc, pr) in zip(st.columns(len(ts)), ts):
                 col.metric(sc, f"{pr * 100:.1f}%")
 
-        # ---- Funciones para aislar varianza (evitan el sesgo de liga) ----
+        # ---- Funciones para aislar varianza con decaimiento temporal y sin duplicar partidos ----
+        def _pesos_temp(fechas_s):
+            f_ref = max(fecha, fechas_s.max()) if len(fechas_s) else fecha
+            dias = (f_ref - fechas_s).dt.days.to_numpy(float).clip(min=0)
+            return np.exp(-np.log(2) / half_life * dias)
+
         def disp_partido(df_h, df_a, eq_h, eq_a, c_h, c_a):
             m_h = (df_h["HomeTeam"] == eq_h) | (df_h["AwayTeam"] == eq_h)
             m_a = (df_a["HomeTeam"] == eq_a) | (df_a["AwayTeam"] == eq_a)
-            tot = pd.concat([df_h.loc[m_h, c_h] + df_h.loc[m_h, c_a], 
-                             df_a.loc[m_a, c_h] + df_a.loc[m_a, c_a]]).dropna()
+            if not cross:
+                m = m_h | m_a
+                sub = df_h.loc[m, [c_h, c_a, "Date"]].dropna()
+                tot = sub[c_h] + sub[c_a]
+                w = _pesos_temp(sub["Date"])
+            else:
+                sub_h = df_h.loc[m_h, [c_h, c_a, "Date"]].dropna()
+                sub_a = df_a.loc[m_a, [c_h, c_a, "Date"]].dropna()
+                tot = pd.concat([sub_h[c_h] + sub_h[c_a], sub_a[c_h] + sub_a[c_a]], ignore_index=True)
+                w = np.concatenate([_pesos_temp(sub_h["Date"]), _pesos_temp(sub_a["Date"])])
             if len(tot) >= 15:
-                mu, var = tot.mean(), tot.var()
-                return mu * mu / (var - mu) if var > mu else 1e6
-            return md.dispersion_nb(df_h[c_h] + df_h[c_a]) * 1.5
+                return md.dispersion_nb(tot.reset_index(drop=True), weights=w, min_muestras=15)
+            sub_l = df_h[[c_h, c_a, "Date"]].dropna()
+            return md.dispersion_nb((sub_l[c_h] + sub_l[c_a]).reset_index(drop=True),
+                                    weights=_pesos_temp(sub_l["Date"]))
 
         def disp_equipo(df_t, eq_t, c_h, c_a):
             m = (df_t["HomeTeam"] == eq_t) | (df_t["AwayTeam"] == eq_t)
-            s = np.where(df_t.loc[m, "HomeTeam"] == eq_t, df_t.loc[m, c_h], df_t.loc[m, c_a])
-            tot = pd.Series(s).dropna()
-            if len(tot) >= 10:
-                mu, var = tot.mean(), tot.var()
-                return mu * mu / (var - mu) if var > mu else 1e6
-            return md.dispersion_nb(pd.concat([df_t[c_h], df_t[c_a]])) * 1.5
+            sub = df_t.loc[m, ["HomeTeam", c_h, c_a, "Date"]].dropna()
+            s = pd.Series(np.where(sub["HomeTeam"] == eq_t, sub[c_h], sub[c_a]))
+            if len(s) >= 10:
+                return md.dispersion_nb(s, weights=_pesos_temp(sub["Date"]), min_muestras=10)
+            sub_l = df_t[[c_h, c_a, "Date"]].dropna()
+            tot_l = pd.concat([sub_l[c_h], sub_l[c_a]], ignore_index=True)
+            w_l = np.tile(_pesos_temp(sub_l["Date"]), 2)
+            return md.dispersion_nb(tot_l, weights=w_l)
 
         # ---- Córners y tiros a puerta ----
         filas = []
@@ -309,7 +339,7 @@ with tab1:
             po = md.prob_over_nb(eh + ea, r_tot, lns)
             
             fila = {"Mercado": etiqueta, "Esp. local": eh, "Esp. visita": ea, "Total": eh + ea}
-            fila.update({f"Over {l}": v * 100 for l, v in po.items()}) 
+            fila.update({f"Over {l} %": v * 100 for l, v in po.items()}) 
             filas.append(fila)
             
         if filas:
@@ -335,11 +365,11 @@ with tab1:
                 r_eq_h = disp_equipo(dh, home, "HF", "AF")
                 r_eq_a = disp_equipo(da, away, "HF", "AF")
                 
-                tot_tablas["Faltas totales"] = {f"Over {l} ": v * 100 for l, v in
+                tot_tablas["Faltas totales"] = {f"Over {l} %": v * 100 for l, v in
                                                 md.prob_over_nb(fh + fa, r_tot, [20.5, 22.5, 24.5, 26.5]).items()}
                 eq_tablas["Faltas"] = pd.DataFrame(
-                    {f"Over {l}": [md.prob_over_nb(fh, r_eq_h, [l])[l] * 100,
-                                   md.prob_over_nb(fa, r_eq_a, [l])[l] * 100]
+                    {f"Over {l} %": [md.prob_over_nb(fh, r_eq_h, [l])[l] * 100,
+                                     md.prob_over_nb(fa, r_eq_a, [l])[l] * 100]
                      for l in [10.5, 12.5, 14.5]}, index=[home[:18], away[:18]])
 
             if disp["tarjetas"]:
@@ -350,11 +380,11 @@ with tab1:
                 r_eq_h = disp_equipo(dh, home, "HY", "AY")
                 r_eq_a = disp_equipo(da, away, "HY", "AY")
                 
-                tot_tablas["Amarillas totales"] = {f"Over {l}": v * 100 for l, v in
+                tot_tablas["Amarillas totales"] = {f"Over {l} %": v * 100 for l, v in
                                                    md.prob_over_nb(yh + ya, r_tot, [2.5, 3.5, 4.5, 5.5]).items()}
                 eq_tablas["Amarillas"] = pd.DataFrame(
-                    {f"Over {l}": [md.prob_over_nb(yh, r_eq_h, [l])[l] * 100,
-                                   md.prob_over_nb(ya, r_eq_a, [l])[l] * 100]
+                    {f"Over {l} %": [md.prob_over_nb(yh, r_eq_h, [l])[l] * 100,
+                                     md.prob_over_nb(ya, r_eq_a, [l])[l] * 100]
                      for l in [0.5, 1.5, 2.5, 3.5]}, index=[home[:18], away[:18]])
 
             if disp["tarjetas"] and disp["rojas"]:

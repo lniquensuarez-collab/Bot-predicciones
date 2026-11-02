@@ -78,22 +78,31 @@ def _filas(d, codigo, temporada=None):
             vacio = cuotas.isna().any(axis=1)
             cuotas.loc[vacio] = cand.loc[vacio]
 
-    cols = {c: col(c) for c in ["HS", "AS", "HST", "AST", "HC", "AC", "HF", "AF", "HY", "AY", "HR", "AR"]}
+    cols = {c: col(c).to_numpy() for c in ["HS", "AS", "HST", "AST", "HC", "AC", "HF", "AF", "HY", "AY", "HR", "AR"]}
+    fechas = d["Date"].dt.strftime("%Y-%m-%d").tolist()
+    homes = d["HomeTeam"].tolist()
+    aways = d["AwayTeam"].tolist()
+    fthg = d["FTHG"].astype(int).tolist()
+    ftag = d["FTAG"].astype(int).tolist()
+    ftr = d["FTR"].tolist()
+    seasons = d["Season"].tolist() if "Season" in d.columns else [None] * len(d)
+    cl, ce, cv = cuotas["l"].to_numpy(), cuotas["e"].to_numpy(), cuotas["v"].to_numpy()
+
     filas = []
-    for i, r in d.iterrows():
-        f = r["Date"].strftime("%Y-%m-%d")
+    for i in range(len(d)):
+        f, h, a = fechas[i], homes[i], aways[i]
         filas.append(dict(
-            id=f"fd:{codigo}:{f}:{r['HomeTeam']}:{r['AwayTeam']}", tipo="club", competicion=codigo,
-            temporada=temporada or _season(r.get("Season"), f[:4]), fecha=f,
-            local=r["HomeTeam"], visita=r["AwayTeam"], goles_l=int(r["FTHG"]), goles_v=int(r["FTAG"]),
-            resultado=r["FTR"],
+            id=f"fd:{codigo}:{f}:{h}:{a}", tipo="club", competicion=codigo,
+            temporada=temporada or _season(seasons[i], f[:4]), fecha=f,
+            local=h, visita=a, goles_l=fthg[i], goles_v=ftag[i],
+            resultado=ftr[i],
             tiros_l=_num(cols["HS"][i]), tiros_v=_num(cols["AS"][i]),
             tiros_p_l=_num(cols["HST"][i]), tiros_p_v=_num(cols["AST"][i]),
             corners_l=_num(cols["HC"][i]), corners_v=_num(cols["AC"][i]),
             faltas_l=_num(cols["HF"][i]), faltas_v=_num(cols["AF"][i]),
             amarillas_l=_num(cols["HY"][i]), amarillas_v=_num(cols["AY"][i]),
             rojas_l=_num(cols["HR"][i]), rojas_v=_num(cols["AR"][i]),
-            cuota_l=_num(cuotas.at[i, "l"]), cuota_e=_num(cuotas.at[i, "e"]), cuota_v=_num(cuotas.at[i, "v"])))
+            cuota_l=_num(cl[i]), cuota_e=_num(ce[i]), cuota_v=_num(cv[i])))
     return filas
 
 

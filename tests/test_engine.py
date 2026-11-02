@@ -36,7 +36,9 @@ def sinteticos(codigo, n=700, seed=0, c0=0.30, ha0=0.20):
 
 
 def test_catalogo():
-    assert {c["codigo"] for c in LIGAS.values()} == {"E0", "E1", "D1", "SP1", "I1", "BRA", "ARG", "JPN", "CHN", "USA"}
+    assert {c["codigo"] for c in LIGAS.values()} == {
+        "E0", "E1", "D1", "SP1", "I1", "F1", "P1", "T1", "BRA", "ARG", "JPN", "CHN", "USA"
+    }
     assert all(c["fuente"] in ("csv", "xlsx") for c in LIGAS.values())
 
 
@@ -61,9 +63,13 @@ def test_parsers():
     # Sin columna Res: se calcula
     assert data_bot.filas_xlsx(x.drop(columns="Res"), "BRA", 10)[2]["resultado"] == "A"
     # Lectura real de xlsx (si hay openpyxl)
-    buf = io.BytesIO()
-    x.to_excel(buf, index=False)
-    assert len(data_bot.filas_xlsx(pd.read_excel(io.BytesIO(buf.getvalue())), "BRA", 10)) == 3
+    try:
+        import openpyxl  # noqa: F401
+        buf = io.BytesIO()
+        x.to_excel(buf, index=False)
+        assert len(data_bot.filas_xlsx(pd.read_excel(io.BytesIO(buf.getvalue())), "BRA", 10)) == 3
+    except ImportError:
+        pass
 
 
 def test_migracion_y_capacidades():
@@ -111,7 +117,13 @@ def test_motor():
         e = EloSystem()
         e.update("A", "B", 3, 0)
         assert e.rating("A") > 1500 > e.rating("B")
+        r_prev = e.rating("A")
+        e.regresion_temporada(0.82)
+        assert 1500 < e.rating("A") < r_prev
         assert abs(esperado_a_1x2(0.7).sum() - 1) < 1e-12
+        # Verifica método Power para desmargenar cuotas
+        p_mkt = db.desmargenar_cuotas([1.5, 4.0, 6.5])
+        assert abs(p_mkt.sum() - 1.0) < 1e-12 and p_mkt[0] > 0.60
 
         feats, est = construir_features(df)
         assert feats["n_prev"].iloc[0] == 0 and feats["elo_diff"].iloc[0] == 0
@@ -123,6 +135,12 @@ def test_motor():
 
         # El nivel de goles debe coincidir con los datos (verifica el intercepto)
         dc, lr = md.entrenar_produccion(df, feats, 10_000)
+        # Verifica warm-start en ajustar_dc
+        dc_ws = md.ajustar_dc(df, df["Date"].max() + pd.Timedelta(days=1), 10_000, p0_prev=dc)
+        assert abs(dc_ws["c"] - dc["c"]) < 1e-4
+        # Verifica no-negatividad de la matriz en escenarios extremos
+        M_ext = md.matriz(4.5, 4.5, 0.3)
+        assert (M_ext >= 0).all() and abs(M_ext.sum() - 1.0) < 1e-12
         tasas = [md.tasas_dc(dc, h, a) for h, a in zip(df["HomeTeam"], df["AwayTeam"])]
         assert abs(np.mean([t[0] for t in tasas]) / df["FTHG"].mean() - 1) < 0.08
         assert abs(np.mean([t[1] for t in tasas]) / df["FTAG"].mean() - 1) < 0.08
@@ -167,7 +185,11 @@ def test_ingesta_simulada():
     x = pd.DataFrame({"Season": [2026], "Date": pd.to_datetime(["2026-04-12"]), "Home": ["Y"], "Away": ["Z"],
                       "HG": [2], "AG": [2], "Res": ["D"]})
     buf = io.BytesIO()
-    x.to_excel(buf, index=False)
+    orig_read_excel = pd.read_excel
+    try:
+        x.to_excel(buf, index=False)
+    except ImportError:
+        pd.read_excel = lambda *_a, **_k: x.copy()
     original = data_bot._descargar
     data_bot._descargar = lambda url: buf.getvalue() if url.endswith(".xlsx") else csv.encode("latin-1")
     try:
@@ -175,13 +197,17 @@ def test_ingesta_simulada():
             con = db.conectar(Path(tmp) / "i.db")
             n, av = data_bot.ingestar_ligas(con, ["🇪🇸 España · La Liga", "🇧🇷 Brasil"], extra_temporadas=0)
             assert not av, av
-            assert n == 3                    # 2 temporadas CSV (misma fila → 2 ids distintos? no: mismo id) + 1 xlsx
+            assert n == 3                    # 2 temporadas CSV + 1 xlsx
             con.close()
     finally:
         data_bot._descargar = original
+        pd.read_excel = orig_read_excel
 
 
 if __name__ == "__main__":
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     for t in (test_catalogo, test_parsers, test_migracion_y_capacidades, test_motor, test_ingesta_simulada):
         t()
         print("✅", t.__name__)

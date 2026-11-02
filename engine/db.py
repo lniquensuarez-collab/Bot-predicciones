@@ -101,6 +101,29 @@ def registrar_ingesta(con, fuente, detalle, filas):
     con.commit()
 
 
+def desmargenar_cuotas(cuotas):
+    """Elimina el margen de la casa de apuestas (overround) mediante el método exponencial (Power Method),
+    que corrige el sesgo favorito-longshot mejor que la normalización proporcional."""
+    c = np.asarray(cuotas, dtype=float)
+    unidim = c.ndim == 1
+    if unidim:
+        c = c[np.newaxis, :]
+    out = np.full_like(c, np.nan, dtype=float)
+    ok = np.all(np.isfinite(c) & (c > 1.0), axis=1)
+    if np.any(ok):
+        q = 1.0 / c[ok]
+        log_q = np.log(q)
+        k = np.ones((q.shape[0], 1), dtype=float)
+        for _ in range(5):
+            qk = q ** k
+            f = qk.sum(axis=1, keepdims=True) - 1.0
+            df = (qk * log_q).sum(axis=1, keepdims=True)
+            k = np.clip(k - f / np.where(np.abs(df) > 1e-12, df, -1.0), 0.1, 5.0)
+        p = q ** k
+        out[ok] = p / p.sum(axis=1, keepdims=True)
+    return out[0] if unidim else out
+
+
 def cargar_partidos(competicion, con=None):
     """DataFrame con nombres estándar del motor (HomeTeam, FTHG, ...) de UNA liga, en orden cronológico."""
     propio = con is None
@@ -112,9 +135,7 @@ def cargar_partidos(competicion, con=None):
     if df.empty:
         return df
     cuotas = df[["cuota_l", "cuota_e", "cuota_v"]].apply(pd.to_numeric, errors="coerce").to_numpy()
-    with np.errstate(divide="ignore", invalid="ignore"):
-        inv = 1.0 / cuotas
-        prob = inv / inv.sum(axis=1, keepdims=True)
+    prob = desmargenar_cuotas(cuotas)
     df = df.rename(columns=MAPA)
     df[["mH", "mD", "mA"]] = prob
     df["Date"] = pd.to_datetime(df["Date"])
