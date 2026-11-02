@@ -370,11 +370,11 @@ def selecciones_bajo_riesgo(home, away, p_fin, s_1x2, mk, s_mk, secundarios=None
     etq_1x = f"{home} o Empate" if basico else f"1X ({home} o Empate)"
     etq_x2 = f"{away} o Empate" if basico else f"X2 ({away} o Empate)"
     etq_12 = f"{home} o {away} (sin empate)" if basico else f"12 ({home} o {away})"
-    # Si ya hay un claro favorito (>=72%), penalizar 1X/X2 para priorizar la victoria directa con cuota atractiva
-    pen_1x = 0.08 if p_h >= 0.72 else 0.0
-    pen_x2 = 0.08 if p_a >= 0.72 else 0.0
-    agregar("Resultado", etq_1x, p_h + p_d, s_1x2[:, 0] + s_1x2[:, 1], pen_1x)
-    agregar("Resultado", etq_x2, p_d + p_a, s_1x2[:, 1] + s_1x2[:, 2], pen_x2)
+    # Si un equipo ya es claro favorito (>=70%), priorizar su victoria directa sin diluir la cuota en 1X/X2/DNB
+    if p_h < 0.70:
+        agregar("Resultado", etq_1x, p_h + p_d, s_1x2[:, 0] + s_1x2[:, 1])
+    if p_a < 0.70:
+        agregar("Resultado", etq_x2, p_d + p_a, s_1x2[:, 1] + s_1x2[:, 2])
     # 12 (Local o Visita) solo tiene sentido táctico en duelos abiertos y parejos donde el empate es el menos probable
     if min(p_h, p_a) >= 0.24 and max(p_h, p_a) <= 0.55 and p_d < min(p_h, p_a):
         agregar("Resultado", etq_12, p_h + p_a, s_1x2[:, 0] + s_1x2[:, 2], 0.025)
