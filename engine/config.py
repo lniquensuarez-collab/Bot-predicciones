@@ -192,20 +192,76 @@ ELO_A_LOG = 0.00115
 URL_FIFA_RESULTS = "https://raw.githubusercontent.com/martj42/international_results/master/results.csv"
 
 COMPETENCIAS_FIFA = {
-    "🏆 Copa Mundial de la FIFA": dict(slug="fifa.world", peso=1.60, factor_goles=1.00, factor_tarjetas=1.10, neutral=True),
-    "🌎 Eliminatorias CONMEBOL (Sudamérica)": dict(slug="fifa.worldq.conmebol", peso=1.35, factor_goles=0.95, factor_tarjetas=1.22, neutral=False),
-    "🇪🇺 Eliminatorias UEFA (Europa)": dict(slug="fifa.worldq.uefa", peso=1.30, factor_goles=1.03, factor_tarjetas=1.00, neutral=False),
-    "🌎 Eliminatorias CONCACAF (Norte/Centroamérica)": dict(slug="fifa.worldq.concacaf", peso=1.25, factor_goles=1.00, factor_tarjetas=1.10, neutral=False),
-    "🌍 Eliminatorias CAF (África)": dict(slug="fifa.worldq.caf", peso=1.25, factor_goles=0.93, factor_tarjetas=1.12, neutral=False),
-    "🌏 Eliminatorias AFC (Asia)": dict(slug="fifa.worldq.afc", peso=1.25, factor_goles=1.02, factor_tarjetas=0.98, neutral=False),
-    "🏆 Copa América (CONMEBOL)": dict(slug="conmebol.america", peso=1.45, factor_goles=0.95, factor_tarjetas=1.25, neutral=True),
-    "🏆 Eurocopa (UEFA Euro)": dict(slug="uefa.euro", peso=1.45, factor_goles=0.98, factor_tarjetas=1.05, neutral=True),
-    "🛡️ UEFA Nations League": dict(slug="uefa.nations", peso=1.05, factor_goles=1.00, factor_tarjetas=1.02, neutral=False),
-    "🏆 Copa Oro (CONCACAF Gold Cup)": dict(slug="concacaf.gold", peso=1.30, factor_goles=1.02, factor_tarjetas=1.08, neutral=True),
-    "🛡️ CONCACAF Nations League": dict(slug="concacaf.nations.league", peso=1.00, factor_goles=1.02, factor_tarjetas=1.05, neutral=False),
-    "🏆 Copa Africana de Naciones (AFCON)": dict(slug="caf.nations", peso=1.40, factor_goles=0.91, factor_tarjetas=1.15, neutral=True),
-    "🏆 Copa Asiática (AFC Asian Cup)": dict(slug="afc.cup", peso=1.35, factor_goles=0.98, factor_tarjetas=1.00, neutral=True),
-    "🤝 Amistoso Internacional FIFA": dict(slug="fifa.friendly", peso=0.50, factor_goles=1.05, factor_tarjetas=0.65, neutral=False),
+    "🏆 Copa Mundial de la FIFA": dict(
+        slug="fifa.world", peso=1.60, importancia=60.0,
+        factor_goles=1.00, mult_goles=1.00, factor_tarjetas=1.10, mult_tarjetas=1.10,
+        neutral=True, neutral_defecto=True,
+    ),
+    "🌎 Eliminatorias CONMEBOL (Sudamérica)": dict(
+        slug="fifa.worldq.conmebol", peso=1.35, importancia=25.0,
+        factor_goles=0.95, mult_goles=0.95, factor_tarjetas=1.22, mult_tarjetas=1.22,
+        neutral=False, neutral_defecto=False,
+    ),
+    "🇪🇺 Eliminatorias UEFA (Europa)": dict(
+        slug="fifa.worldq.uefa", peso=1.30, importancia=25.0,
+        factor_goles=1.03, mult_goles=1.03, factor_tarjetas=1.00, mult_tarjetas=1.00,
+        neutral=False, neutral_defecto=False,
+    ),
+    "🌎 Eliminatorias CONCACAF (Norte/Centroamérica)": dict(
+        slug="fifa.worldq.concacaf", peso=1.25, importancia=25.0,
+        factor_goles=1.00, mult_goles=1.00, factor_tarjetas=1.10, mult_tarjetas=1.10,
+        neutral=False, neutral_defecto=False,
+    ),
+    "🌍 Eliminatorias CAF (África)": dict(
+        slug="fifa.worldq.caf", peso=1.25, importancia=25.0,
+        factor_goles=0.93, mult_goles=0.93, factor_tarjetas=1.12, mult_tarjetas=1.12,
+        neutral=False, neutral_defecto=False,
+    ),
+    "🌏 Eliminatorias AFC (Asia)": dict(
+        slug="fifa.worldq.afc", peso=1.25, importancia=25.0,
+        factor_goles=1.02, mult_goles=1.02, factor_tarjetas=0.98, mult_tarjetas=0.98,
+        neutral=False, neutral_defecto=False,
+    ),
+    "🏆 Copa América (CONMEBOL)": dict(
+        slug="conmebol.america", peso=1.45, importancia=50.0,
+        factor_goles=0.95, mult_goles=0.95, factor_tarjetas=1.25, mult_tarjetas=1.25,
+        neutral=True, neutral_defecto=True,
+    ),
+    "🏆 Eurocopa (UEFA Euro)": dict(
+        slug="uefa.euro", peso=1.45, importancia=50.0,
+        factor_goles=0.98, mult_goles=0.98, factor_tarjetas=1.05, mult_tarjetas=1.05,
+        neutral=True, neutral_defecto=True,
+    ),
+    "🛡️ UEFA Nations League": dict(
+        slug="uefa.nations", peso=1.05, importancia=15.0,
+        factor_goles=1.00, mult_goles=1.00, factor_tarjetas=1.02, mult_tarjetas=1.02,
+        neutral=False, neutral_defecto=False,
+    ),
+    "🏆 Copa Oro (CONCACAF Gold Cup)": dict(
+        slug="concacaf.gold", peso=1.30, importancia=35.0,
+        factor_goles=1.02, mult_goles=1.02, factor_tarjetas=1.08, mult_tarjetas=1.08,
+        neutral=True, neutral_defecto=True,
+    ),
+    "🛡️ CONCACAF Nations League": dict(
+        slug="concacaf.nations.league", peso=1.00, importancia=15.0,
+        factor_goles=1.02, mult_goles=1.02, factor_tarjetas=1.05, mult_tarjetas=1.05,
+        neutral=False, neutral_defecto=False,
+    ),
+    "🏆 Copa Africana de Naciones (AFCON)": dict(
+        slug="caf.nations", peso=1.40, importancia=35.0,
+        factor_goles=0.91, mult_goles=0.91, factor_tarjetas=1.15, mult_tarjetas=1.15,
+        neutral=True, neutral_defecto=True,
+    ),
+    "🏆 Copa Asiática (AFC Asian Cup)": dict(
+        slug="afc.cup", peso=1.35, importancia=35.0,
+        factor_goles=0.98, mult_goles=0.98, factor_tarjetas=1.00, mult_tarjetas=1.00,
+        neutral=True, neutral_defecto=True,
+    ),
+    "🤝 Amistoso Internacional FIFA": dict(
+        slug="fifa.friendly", peso=0.50, importancia=10.0,
+        factor_goles=1.05, mult_goles=1.05, factor_tarjetas=0.65, mult_tarjetas=0.65,
+        neutral=False, neutral_defecto=False,
+    ),
 }
 
 # Altitud en metros sobre el nivel del mar de las sedes habituales de Eliminatorias FIFA

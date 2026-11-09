@@ -22,6 +22,7 @@ from engine import models as md
 if (not hasattr(ft.Estado, "resumen_xg")
         or not hasattr(_cfg, "ALTITUD_PERU")
         or not hasattr(_cfg, "COMPETENCIAS_FIFA")
+        or "neutral_defecto" not in next(iter(getattr(_cfg, "COMPETENCIAS_FIFA", {}).values()), {})
         or not hasattr(md, "ajuste_altura_peru")
         or not hasattr(md, "ajuste_contexto_seleccion")
         or not hasattr(bt, "simular_apuestas")
@@ -215,7 +216,8 @@ with tab1:
             index=0,
             key="fifa_fase",
         )
-        neutral_def = bool(COMPETENCIAS_FIFA[torneo_partido]["neutral_defecto"])
+        cfg_tf = COMPETENCIAS_FIFA.get(torneo_partido, {})
+        neutral_def = bool(cfg_tf.get("neutral_defecto", cfg_tf.get("neutral", False)))
         neutral = st.checkbox("🏟️ Sede neutral (ej. Mundial, Copa América, Eurocopa, Copa Oro)", value=neutral_def)
         cruzado = False
         lig_h = lig_a = "FIFA"

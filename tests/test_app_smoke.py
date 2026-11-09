@@ -95,7 +95,10 @@ def correr(override):
         pass
     # Solo lo que pinta la predicción: desde el título del partido hasta el inicio de la pestaña Ranking
     ini = next((i for i, (n, _) in enumerate(st.log) if n == "subheader"), 0)
-    fin = next((i for i, (n, x) in enumerate(st.log) if n == "caption" and x.startswith("El Elo solo")), len(st.log))
+    fin = next(
+        (i for i, (n, x) in enumerate(st.log) if n == "caption" and x.startswith(("El Elo solo", "En Selecciones FIFA"))),
+        len(st.log),
+    )
     texto = "\n".join(f"{n}|{x}" for n, x in st.log[ini:fin])
     return st, texto
 
@@ -104,6 +107,7 @@ def preparar_db():
     with db.sesion() as con:
         db.guardar_partidos(con, sinteticos("E0", 450, 1))
         db.guardar_partidos(con, sinteticos("D1", 450, 2, c0=0.28))
+        db.guardar_partidos(con, sinteticos("FIFA", 250, 4))
         brasil = sinteticos("BRA", 450, 3)
         for f in brasil:                                    # los xlsx no traen estadísticas
             for k in ("tiros_p_l", "tiros_p_v", "corners_l", "corners_v", "faltas_l", "faltas_v",
@@ -138,10 +142,18 @@ def test_partido_entre_ligas():
     assert "Partido entre ligas" in t and "Faltas y tarjetas por equipo" in t and "Over 2.5" in t
 
 
+def test_modo_selecciones_fifa():
+    _, t = correr({
+        "🌐 Modo de la Aplicación": "🌎 Selecciones FIFA",
+        "⚔️ Instancia / Fase del Encuentro": "⚔️ Mata-Mata / Eliminación Directa (Octavos, Cuartos, Semis, Final)",
+    })
+    assert "Quién Clasifica a la Siguiente Ronda" in t and "Goles" in t and "Faltas y tarjetas por equipo" in t
+
+
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     preparar_db()
-    for f in (test_modo_completo, test_modo_basico, test_partido_entre_ligas):
+    for f in (test_modo_completo, test_modo_basico, test_partido_entre_ligas, test_modo_selecciones_fifa):
         f()
         print("✅", f.__name__)
