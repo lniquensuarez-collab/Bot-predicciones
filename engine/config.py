@@ -188,6 +188,69 @@ LIGAS = {
 # 1 punto Elo de diferencia entre ligas ≈ 0.00115 en escala log de ataque/defensa (aproximación)
 ELO_A_LOG = 0.00115
 
+# ======================= MÓDULO DE SELECCIONES FIFA ===========================
+URL_FIFA_RESULTS = "https://raw.githubusercontent.com/martj42/international_results/master/results.csv"
+
+COMPETENCIAS_FIFA = {
+    "🏆 Copa Mundial de la FIFA": dict(slug="fifa.world", peso=1.60, factor_goles=1.00, factor_tarjetas=1.10, neutral=True),
+    "🌎 Eliminatorias CONMEBOL (Sudamérica)": dict(slug="fifa.worldq.conmebol", peso=1.35, factor_goles=0.95, factor_tarjetas=1.22, neutral=False),
+    "🇪🇺 Eliminatorias UEFA (Europa)": dict(slug="fifa.worldq.uefa", peso=1.30, factor_goles=1.03, factor_tarjetas=1.00, neutral=False),
+    "🌎 Eliminatorias CONCACAF (Norte/Centroamérica)": dict(slug="fifa.worldq.concacaf", peso=1.25, factor_goles=1.00, factor_tarjetas=1.10, neutral=False),
+    "🌍 Eliminatorias CAF (África)": dict(slug="fifa.worldq.caf", peso=1.25, factor_goles=0.93, factor_tarjetas=1.12, neutral=False),
+    "🌏 Eliminatorias AFC (Asia)": dict(slug="fifa.worldq.afc", peso=1.25, factor_goles=1.02, factor_tarjetas=0.98, neutral=False),
+    "🏆 Copa América (CONMEBOL)": dict(slug="conmebol.america", peso=1.45, factor_goles=0.95, factor_tarjetas=1.25, neutral=True),
+    "🏆 Eurocopa (UEFA Euro)": dict(slug="uefa.euro", peso=1.45, factor_goles=0.98, factor_tarjetas=1.05, neutral=True),
+    "🛡️ UEFA Nations League": dict(slug="uefa.nations", peso=1.05, factor_goles=1.00, factor_tarjetas=1.02, neutral=False),
+    "🏆 Copa Oro (CONCACAF Gold Cup)": dict(slug="concacaf.gold", peso=1.30, factor_goles=1.02, factor_tarjetas=1.08, neutral=True),
+    "🛡️ CONCACAF Nations League": dict(slug="concacaf.nations.league", peso=1.00, factor_goles=1.02, factor_tarjetas=1.05, neutral=False),
+    "🏆 Copa Africana de Naciones (AFCON)": dict(slug="caf.nations", peso=1.40, factor_goles=0.91, factor_tarjetas=1.15, neutral=True),
+    "🏆 Copa Asiática (AFC Asian Cup)": dict(slug="afc.cup", peso=1.35, factor_goles=0.98, factor_tarjetas=1.00, neutral=True),
+    "🤝 Amistoso Internacional FIFA": dict(slug="fifa.friendly", peso=0.50, factor_goles=1.05, factor_tarjetas=0.65, neutral=False),
+}
+
+# Altitud en metros sobre el nivel del mar de las sedes habituales de Eliminatorias FIFA
+ALTITUD_SELECCIONES = {
+    "Bolivia": 3850,       # El Alto (4,150 m) / La Paz (3,640 m)
+    "Ecuador": 2850,       # Quito (Rodrigo Paz Delgado)
+    "Mexico": 2240,        # Ciudad de México (Estadio Azteca)
+    "Colombia": 1300,      # Barranquilla (calor extremo 30 m) / Bogotá (2,640 m)
+    "Ethiopia": 2355,      # Adís Abeba
+    "Kenya": 1795,         # Nairobi
+    "South Africa": 1753,  # Johannesburgo
+    "Guatemala": 1500,     # Ciudad de Guatemala
+    "Costa Rica": 1172,    # San José
+    "Honduras": 1120,      # Tegucigalpa / San Pedro Sula
+    "Peru": 500,           # Lima (plantel parcialmente aclimatado a altura andina)
+}
+CALOR_SELECCIONES = {
+    "Colombia", "Honduras", "Panama", "Saudi Arabia", "Qatar",
+    "United Arab Emirates", "Nigeria", "Ivory Coast", "Senegal", "Cameroon",
+}
+
+# Puntos de referencia del Ranking FIFA oficial (escala SUM de la FIFA) para anclaje de jerarquía
+RANKING_FIFA_PUNTOS = {
+    "Argentina": 1889, "France": 1851, "Spain": 1857, "England": 1813, "Brazil": 1772,
+    "Belgium": 1768, "Portugal": 1752, "Netherlands": 1747, "Italy": 1726, "Colombia": 1738,
+    "Germany": 1713, "Uruguay": 1701, "Croatia": 1699, "Morocco": 1676, "Japan": 1645,
+    "United States": 1632, "Mexico": 1640, "Senegal": 1627, "Iran": 1622, "Switzerland": 1625,
+    "Denmark": 1612, "South Korea": 1589, "Australia": 1552, "Ukraine": 1548, "Turkey": 1545,
+    "Ecuador": 1536, "Austria": 1532, "Sweden": 1522, "Poland": 1525, "Hungary": 1518,
+    "Egypt": 1515, "Canada": 1512, "Nigeria": 1503, "Serbia": 1498, "Algeria": 1496,
+    "Ivory Coast": 1495, "Scotland": 1490, "Peru": 1488, "Russia": 1486, "Chile": 1485,
+    "Venezuela": 1482, "Czech Republic": 1480, "Romania": 1479, "Paraguay": 1475, "Norway": 1473,
+    "Greece": 1471, "Panama": 1470, "Cameroon": 1468, "Costa Rica": 1465, "Slovakia": 1460,
+    "Mali": 1455, "Tunisia": 1450, "Qatar": 1448, "Wales": 1446, "Iraq": 1442,
+    "Saudi Arabia": 1435, "Uzbekistan": 1432, "South Africa": 1428, "Slovenia": 1425,
+    "Jamaica": 1418, "Jordan": 1415, "Georgia": 1412, "Republic of Ireland": 1410,
+    "Bolivia": 1408, "Finland": 1402, "Albania": 1398, "Burkina Faso": 1395, "DR Congo": 1392,
+    "Ghana": 1390, "Honduras": 1385, "Bosnia and Herzegovina": 1380, "North Macedonia": 1375,
+    "Montenegro": 1370, "Iceland": 1365, "Northern Ireland": 1360, "Guinea": 1358,
+    "Cape Verde": 1355, "Israel": 1352, "Oman": 1348, "Bahrain": 1342, "El Salvador": 1338,
+    "Bulgaria": 1335, "Haiti": 1330, "Curacao": 1326, "New Zealand": 1325, "China PR": 1320,
+    "Equatorial Guinea": 1318, "Zambia": 1315, "Uganda": 1310, "Syria": 1305, "Guatemala": 1300,
+    "Trinidad and Tobago": 1295, "Palestine": 1290, "Thailand": 1285, "Tajikistan": 1280,
+}
+
 
 def temporadas_recientes(n):
     """Últimas n temporadas europeas calculadas desde hoy. Con n=2 hoy: ['2526', '2627']."""

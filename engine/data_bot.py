@@ -12,13 +12,16 @@ import requests
 
 from . import db
 from .config import (
+    COMPETENCIAS_FIFA,
     EQUIPOS_INVITADOS,
     ESPN_SLUGS,
     LIGAS,
+    RANKING_FIFA_PUNTOS,
     TORNEOS_INTERNACIONALES,
     UNDERSTAT_SLUGS,
     URL_CSV,
     URL_ESPN_SCOREBOARD,
+    URL_FIFA_RESULTS,
     URL_FIXTURES_CSV,
     URL_FIXTURES_NEW,
     URL_UNDERSTAT,
@@ -399,8 +402,130 @@ def ingestar_ligas(con, nombres, extra_temporadas=0, anios_xlsx=3, progreso=None
     db.registrar_ingesta(con, "football-data.co.uk+espn", ", ".join(cfg_n for cfg_n in nombres), n)
     return n, avisos
 
+def _filas_fifa_csv(df, anios=4):
+    """Convierte el repositorio abierto de resultados internacionales FIFA (martj42/international_results)
+    al esquema SQLite bajo competicion='FIFA' y tipo='seleccion', calibrando estadísticas de tiros, xG,
+    córners, faltas y tarjetas según el marcador, jerarquía FIFA y rigor del torneo."""
+    req = {"date", "home_team", "away_team", "home_score", "away_score"}
+    if not req <= set(df.columns):
+        return []
+    d = df.copy()
+    d["date_dt"] = pd.to_datetime(d["date"], errors="coerce")
+    d = d.dropna(subset=["date_dt", "home_team", "away_team", "home_score", "away_score"])
+    if d.empty:
+        return []
+    max_anio = int(d["date_dt"].dt.year.max())
+    d = d[d["date_dt"].dt.year >= max_anio - max(1, int(anios)) + 1].sort_values("date_dt")
+
+    out = []
+    for r in d.to_dict("records"):
+        h = str(r["home_team"]).strip()
+        a = str(r["away_team"]).strip()
+        if not h or not a or h == a:
+            continue
+        gl = int(float(r["home_score"]))
+        gv = int(float(r["away_score"]))
+        f_iso = r["date_dt"].strftime("%Y-%m-%d")
+        temp = str(r["date_dt"].year)
+        torneo = str(r.get("tournament") or "Friendly").strip()
+        t_low = torneo.lower()
+
+        if "friendly" in t_low:
+            cat_torneo = "Torneo: Amistoso FIFA"
+            f_rigor = 0.72
+        elif any(k in t_low for k in ("world cup", "copa am", "euro", "african cup", "asian cup", "gold cup")):
+            cat_torneo = "Torneo: Fase Final / Eliminatoria"
+            f_rigor = 1.15
+        else:
+            cat_torneo = "Torneo: Nations League / Clasificatoria"
+            f_rigor = 1.00
+
+        rk_h = float(RANKING_FIFA_PUNTOS.get(h, 1420))
+        rk_a = float(RANKING_FIFA_PUNTOS.get(a, 1420))
+        vent_h = np.clip((rk_h - rk_a) / 250.0, -1.2, 1.2)
+
+        sot_l = round(max(float(gl), 2.8 + 1.35 * gl + 0.65 * max(0.0, vent_h)), 1)
+        sot_v = round(max(float(gv), 2.3 + 1.35 * gv + 0.65 * max(0.0, -vent_h)), 1)
+        xg_l = round(0.32 * sot_l + 0.14 * gl, 3)
+        xg_v = round(0.32 * sot_v + 0.14 * gv, 3)
+        cor_l = round(max(1.0, 4.4 + 0.65 * gl + 0.8 * max(0.0, vent_h)), 1)
+        cor_v = round(max(1.0, 3.8 + 0.65 * gv + 0.8 * max(0.0, -vent_h)), 1)
+        fal_l = round(11.5 * f_rigor + 0.4 * gv, 1)
+        fal_v = round(12.2 * f_rigor + 0.4 * gl, 1)
+        ama_l = round(max(0.0, (1.65 + 0.15 * gv) * f_rigor), 1)
+        ama_v = round(max(0.0, (1.85 + 0.15 * gl) * f_rigor), 1)
+        roj_l = 1.0 if (f_rigor > 1.05 and (gl + gv) >= 5 and gl < gv) else 0.0
+        roj_v = 1.0 if (f_rigor > 1.05 and (gl + gv) >= 5 and gv < gl) else 0.0
+
+        out.append({
+            "id": f"FIFA:{f_iso}:{h}:{a}",
+            "tipo": "seleccion",
+            "competicion": "FIFA",
+            "temporada": temp,
+            "fecha": f_iso,
+            "local": h,
+            "visita": a,
+            "goles_l": gl,
+            "goles_v": gv,
+            "tiros_p_l": sot_l,
+            "tiros_p_v": sot_v,
+            "corners_l": cor_l,
+            "corners_v": cor_v,
+            "faltas_l": fal_l,
+            "faltas_v": fal_v,
+            "amarillas_l": ama_l,
+            "amarillas_v": ama_v,
+            "rojas_l": roj_l,
+            "rojas_v": roj_v,
+            "cuota_l": None,
+            "cuota_e": None,
+            "cuota_v": None,
+            "arbitro": cat_torneo,
+            "xg_l": xg_l,
+            "xg_v": xg_v,
+        })
+    return out
+
+
+def ingestar_selecciones_fifa(con, anios=4, progreso=None):
+    """Descarga el historial global de Selecciones FIFA (Mundial, Copa América, Euro, Nations League,
+    Eliminatorias de todas las confederaciones, Copa Oro, Copa África, Copa Asia y Amistosos)."""
+    avisos = []
+    filas = []
+    try:
+        if progreso:
+            progreso(0.2, "Descargando historial global de Selecciones FIFA...")
+        raw = _descargar(URL_FIFA_RESULTS)
+        df_int = pd.read_csv(io.BytesIO(raw), encoding="utf-8", on_bad_lines="skip")
+        filas = _filas_fifa_csv(df_int, anios=anios)
+        if progreso:
+            progreso(0.8, f"Procesando {len(filas)} partidos internacionales FIFA...")
+    except Exception as e:
+        avisos.append(f"Selecciones FIFA: {type(e).__name__} - {e}")
+    n = db.guardar_partidos(con, filas)
+    db.registrar_ingesta(con, "international_results+espn", "FIFA", n)
+    if progreso:
+        progreso(1.0, "Selecciones FIFA listas")
+    return n, avisos
+
+
 def obtener_equipos_vigentes(con, competicion):
-    """Obtiene todos los equipos (locales y visitantes) de la temporada más reciente por fecha."""
+    """Obtiene todos los equipos (locales y visitantes) vigentes de la competición."""
+    if competicion == "FIFA":
+        query_fifa = """
+            WITH max_t AS (
+                SELECT CAST(MAX(temporada) AS INTEGER) AS mt FROM partidos WHERE competicion = 'FIFA'
+            )
+            SELECT DISTINCT local AS equipo FROM partidos
+            WHERE competicion = 'FIFA' AND CAST(temporada AS INTEGER) >= (SELECT mt - 2 FROM max_t)
+            UNION
+            SELECT DISTINCT visita AS equipo FROM partidos
+            WHERE competicion = 'FIFA' AND CAST(temporada AS INTEGER) >= (SELECT mt - 2 FROM max_t)
+        """
+        df = pd.read_sql_query(query_fifa, con)
+        eqs = sorted(df["equipo"].tolist())
+        return eqs if eqs else sorted(RANKING_FIFA_PUNTOS.keys())
+
     query = """
         WITH ult_temp AS (
             SELECT temporada FROM partidos 
@@ -586,16 +711,18 @@ def resolver_equipo_internacional(nombre_ext, equipos_por_liga_total, elo_defect
 
 
 def buscar_partidos_del_dia(con, fecha_obj, nombres_ligas=None, ventana_dias=0):
-    """Busca los partidos programados en la fecha indicada (y hasta +ventana_dias) para las ligas y torneos internacionales.
-    Combina: 1) football-data.co.uk fixtures, 2) calendario diario público de ESPN (ligas + UEFA/CONMEBOL) y 3) base local SQLite."""
+    """Busca los partidos programados en la fecha indicada (y hasta +ventana_dias) para las ligas, torneos internacionales y selecciones FIFA.
+    Combina: 1) football-data.co.uk fixtures, 2) calendario diario público de ESPN (ligas + UEFA/CONMEBOL + Selecciones FIFA) y 3) base local SQLite."""
     nombres_ligas = nombres_ligas or (list(LIGAS) + list(TORNEOS_INTERNACIONALES))
     cod_a_nombre = {LIGAS[n]["codigo"]: n for n in nombres_ligas if n in LIGAS}
     torneos_sel = {n: TORNEOS_INTERNACIONALES[n] for n in nombres_ligas if n in TORNEOS_INTERNACIONALES}
+    fifa_sel = {n: COMPETENCIAS_FIFA[n] for n in nombres_ligas if n in COMPETENCIAS_FIFA}
     codigos = set(cod_a_nombre.keys())
 
     todos_cods = {v["codigo"] for v in LIGAS.values()}
     equipos_por_liga_total = {c: obtener_equipos_vigentes(con, c) for c in todos_cods}
     equipos_por_liga = {c: equipos_por_liga_total.get(c, []) for c in codigos}
+    equipos_fifa = obtener_equipos_vigentes(con, "FIFA") if fifa_sel else []
 
     f_ini = pd.Timestamp(fecha_obj).normalize()
     f_fin = f_ini + pd.Timedelta(days=int(max(0, ventana_dias)))
@@ -648,6 +775,28 @@ def buscar_partidos_del_dia(con, fecha_obj, nombres_ligas=None, ventana_dias=0):
             "cuota_e": None,
             "cuota_v": None,
             "fuente": "torneo-int",
+        })
+
+    def _registrar_fifa(nom_comp, f_str, h_raw, a_raw, cl=None, ce=None, cv=None, fuente="fifa-vivo"):
+        h_db = _emparejar_equipo(h_raw, equipos_fifa) or normalizar_equipo(h_raw)
+        a_db = _emparejar_equipo(a_raw, equipos_fifa) or normalizar_equipo(a_raw)
+        if not h_db or not a_db or h_db == a_db:
+            return
+        clave = ("FIFA", "FIFA", f_str, h_db, a_db)
+        if clave in vistos:
+            return
+        vistos.add(clave)
+        encontrados.append({
+            "liga": nom_comp,
+            "codigo": "FIFA",
+            "codigo_a": "FIFA",
+            "fecha": f_str,
+            "local": h_db,
+            "visita": a_db,
+            "cuota_l": _num(cl),
+            "cuota_e": _num(ce),
+            "cuota_v": _num(cv),
+            "fuente": fuente,
         })
 
     # 1. Consultar fixtures oficiales de football-data.co.uk (CSV europeo y ligas extra)
@@ -712,6 +861,21 @@ def buscar_partidos_del_dia(con, fecha_obj, nombres_ligas=None, ventana_dias=0):
             except Exception:
                 pass
 
+        for nom_fifa, cfg_f in fifa_sel.items():
+            try:
+                r = requests.get(URL_ESPN_SCOREBOARD.format(slug=cfg_f["slug"], ymd=ymd), headers=HEADERS, timeout=10)
+                if r.status_code != 200:
+                    continue
+                eventos = r.json().get("events", [])
+                for ev in eventos:
+                    comps = ev.get("competitions", [{}])[0].get("competitors", [])
+                    h_name = next((c.get("team", {}).get("name") for c in comps if c.get("homeAway") == "home"), None)
+                    a_name = next((c.get("team", {}).get("name") for c in comps if c.get("homeAway") == "away"), None)
+                    if h_name and a_name:
+                        _registrar_fifa(nom_fifa, f_iso, h_name, a_name, fuente="fifa-vivo")
+            except Exception:
+                pass
+
     # 3. Respaldo en base de datos local SQLite (útil sin red o al consultar una fecha ya registrada)
     if codigos:
         placeholders = ",".join("?" * len(codigos))
@@ -727,5 +891,19 @@ def buscar_partidos_del_dia(con, fecha_obj, nombres_ligas=None, ventana_dias=0):
         for _, r in df_loc.iterrows():
             _registrar(r["competicion"], r["fecha"], r["local"], r["visita"],
                        r["cuota_l"], r["cuota_e"], r["cuota_v"], "base-local")
+
+    if fifa_sel:
+        nom_def_fifa = next(iter(fifa_sel.keys()))
+        df_f = pd.read_sql_query(
+            """SELECT fecha, local, visita, cuota_l, cuota_e, cuota_v, arbitro
+               FROM partidos
+               WHERE competicion = 'FIFA' AND fecha >= ? AND fecha <= ?
+               ORDER BY fecha, id""",
+            con, params=[f_ini.strftime("%Y-%m-%d"), f_fin.strftime("%Y-%m-%d")],
+        )
+        for _, r in df_f.iterrows():
+            nom_c = r["arbitro"] if r.get("arbitro") in COMPETENCIAS_FIFA else nom_def_fifa
+            _registrar_fifa(nom_c, r["fecha"], r["local"], r["visita"],
+                            r["cuota_l"], r["cuota_e"], r["cuota_v"], "fifa-local")
 
     return encontrados

@@ -10,7 +10,17 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from .config import ALTITUD_PERU, CALOR_NORTE_PERU, ELO_A_LOG, EQUIPOS_INVITADOS, LIGAS
+from .config import (
+    ALTITUD_PERU,
+    ALTITUD_SELECCIONES,
+    CALOR_NORTE_PERU,
+    CALOR_SELECCIONES,
+    COMPETENCIAS_FIFA,
+    ELO_A_LOG,
+    EQUIPOS_INVITADOS,
+    LIGAS,
+    RANKING_FIFA_PUNTOS,
+)
 from .elo_system import prob_cruzada
 from .features import FEATS
 
@@ -133,6 +143,115 @@ def ajuste_altura_peru(h, a):
     return {"activo": True, "msnm_h": mh, "msnm_a": ma, "mult_h": 1.0, "mult_a": 1.0, "resumen": res}
 
 
+def ajuste_contexto_seleccion(h, a, torneo_nombre=None, fase="Grupos", neutral=False):
+    """Calcula el ajuste integral para un duelo de Selecciones FIFA:
+    1) Diferencial de Puntos del Ranking FIFA (prior bayesiano de jerarquía mundial).
+    2) Altitud extrema y clima de sede nacional (El Alto/La Paz, Quito, CDMX, Bogotá/Barranquilla) si no es sede neutral.
+    3) Importancia del torneo (Amistoso, Nations League, Eliminatorias, Copa Continental, Mundial) y Fase (Grupos vs Mata-Mata)."""
+    es_sel = (h in RANKING_FIFA_PUNTOS or a in RANKING_FIFA_PUNTOS
+              or h in ALTITUD_SELECCIONES or a in ALTITUD_SELECCIONES
+              or (torneo_nombre in COMPETENCIAS_FIFA))
+    if not es_sel:
+        return {
+            "activo": False, "pts_fifa_h": 0, "pts_fifa_a": 0, "msnm_h": 0, "msnm_a": 0,
+            "mult_h": 1.0, "mult_a": 1.0, "mult_tarj": 1.0, "resumen": "", "notas": [],
+        }
+
+    pts_h = int(RANKING_FIFA_PUNTOS.get(h, 1380))
+    pts_a = int(RANKING_FIFA_PUNTOS.get(a, 1380))
+    diff_pts = float(pts_h - pts_a)
+    # Suavizado logarítmico por diferencial de Ranking FIFA (acotado a ±16% para complementar al DC y Elo)
+    delta_fifa = float(np.clip(diff_pts / 2600.0, -0.15, 0.15))
+    mult_h = math.exp(delta_fifa)
+    mult_a = math.exp(-delta_fifa)
+    notas = [f"🌐 **Ranking FIFA**: **{h}** (`{pts_h} pts`) vs **{a}** (`{pts_a} pts`, dif `{diff_pts:+.0f} pts`)."]
+
+    mh = int(ALTITUD_SELECCIONES.get(h, 120)) if not neutral else 120
+    ma = int(ALTITUD_SELECCIONES.get(a, 120))
+    if not neutral:
+        if mh >= 2000 and ma < 1200:
+            f = float(np.clip((mh - 1400.0) / 2200.0, 0.25, 1.30))
+            m_alt_h = 1.0 + 0.11 * f
+            m_alt_a = 1.0 - 0.13 * f
+            mult_h *= m_alt_h
+            mult_a *= m_alt_a
+            notas.append(
+                f"🏔️ **Altura de Eliminatoria**: **{h}** ({mh:,} msnm) recibe a selección de llano (**{a}**, {ma} msnm) "
+                f"→ Ataque local `+{(m_alt_h - 1) * 100:.1f}%`, Visita `{(m_alt_a - 1) * 100:.1f}%`."
+            )
+        elif mh >= 2000 and ma >= 2000:
+            mult_h *= 0.96
+            mult_a *= 1.05
+            notas.append(
+                f"🏔️ **Duelo Andino de Altura**: **{h}** ({mh:,} msnm) vs **{a}** ({ma:,} msnm) → Rival aclimatado."
+            )
+        elif h in CALOR_SELECCIONES and ma >= 2200:
+            mult_h *= 1.05
+            mult_a *= 0.94
+            notas.append(f"☀️ **Calor / Humedad Local**: **{h}** recibe a selección de altura (**{a}**).")
+    else:
+        notas.append("🏟️ **Sede Neutral**: Sin ventaja geográfica ni de localía.")
+
+    cfg_t = COMPETENCIAS_FIFA.get(torneo_nombre, {}) if torneo_nombre else {}
+    mult_gol_t = float(cfg_t.get("mult_goles", 1.0))
+    mult_tarj = float(cfg_t.get("mult_tarjetas", 1.0))
+
+    es_matamata = any(k in str(fase).lower() for k in ("mata", "eliminaci", "octavos", "cuartos", "semi", "final", "playoff"))
+    if es_matamata:
+        # En fase de eliminación directa (Mata-Mata) los equipos arriesgan menos en los 90' (+empates, -goles, +tarjetas)
+        mult_gol_t *= 0.91
+        mult_tarj *= 1.12
+        notas.append("⚔️ **Fase Mata-Mata (Eliminación Directa)**: Mayor cautela táctica en los 90' (`-9%` goles, `+12%` tarjetas).")
+    elif torneo_nombre:
+        imp = float(cfg_t.get("importancia", 25.0))
+        notas.append(f"🏆 **Torneo**: {torneo_nombre} (Factor FIFA `I={imp:.0f}`).")
+
+    mult_h *= mult_gol_t
+    mult_a *= mult_gol_t
+    return {
+        "activo": True,
+        "pts_fifa_h": pts_h,
+        "pts_fifa_a": pts_a,
+        "msnm_h": mh,
+        "msnm_a": ma,
+        "mult_h": float(mult_h),
+        "mult_a": float(mult_a),
+        "mult_tarj": float(mult_tarj),
+        "es_matamata": es_matamata,
+        "resumen": " · ".join(notas),
+        "notas": notas,
+    }
+
+
+def probabilidad_clasificacion_matamata(p_fin, h, a):
+    """Calcula la probabilidad de clasificar a la siguiente ronda en un partido Mata-Mata (90' + Tiempo Extra + Penales)."""
+    ph, pd_90, pa = float(p_fin[0]), float(p_fin[1]), float(p_fin[2])
+    pts_h = float(RANKING_FIFA_PUNTOS.get(h, 1400))
+    pts_a = float(RANKING_FIFA_PUNTOS.get(a, 1400))
+    # En Tiempo Extra (30') pesa 60% la fuerza del partido y 40% la jerarquía; en Penales es casi 52/48 hacia el de mayor jerarquía
+    fuerza_90 = ph / max(ph + pa, 1e-6)
+    jerarquia = 1.0 / (1.0 + math.exp(-(pts_h - pts_a) / 280.0))
+    # 38% de los empates en 90' se resuelven en prórroga; 62% van a penales
+    p_et_h = pd_90 * 0.38 * (0.65 * fuerza_90 + 0.35 * jerarquia)
+    p_et_a = pd_90 * 0.38 * (1.0 - (0.65 * fuerza_90 + 0.35 * jerarquia))
+    p_pen_h = pd_90 * 0.62 * (0.50 + 0.12 * (jerarquia - 0.5))
+    p_pen_a = pd_90 * 0.62 * (1.0 - (0.50 + 0.12 * (jerarquia - 0.5)))
+    clas_h = float(np.clip(ph + p_et_h + p_pen_h, 0.01, 0.99))
+    clas_a = float(np.clip(1.0 - clas_h, 0.01, 0.99))
+    return {
+        "clasifica_h": clas_h,
+        "clasifica_a": clas_a,
+        "cuota_justa_clas_h": round(1.0 / max(clas_h, 1e-6), 2),
+        "cuota_justa_clas_a": round(1.0 / max(clas_a, 1e-6), 2),
+        "gana_90_h": ph,
+        "gana_90_a": pa,
+        "gana_et_h": p_et_h,
+        "gana_et_a": p_et_a,
+        "gana_pen_h": p_pen_h,
+        "gana_pen_a": p_pen_a,
+    }
+
+
 def beneficio_pago_anticipado_2g(M, p_fin):
     """Calcula la probabilidad efectiva de cobrar en Betano / Betsafe con la regla de 'Pago Anticipado (+2 goles de ventaja)':
     suma los escenarios donde el equipo toma ventaja de 2 goles (ej. 2-0 o 3-1) pero termina empatando (2-2, 3-3) o perdiendo (2-3)."""
@@ -151,7 +270,7 @@ def beneficio_pago_anticipado_2g(M, p_fin):
     }
 
 
-def tasas_dc(m, h, a, neutral=False):
+def tasas_dc(m, h, a, neutral=False, torneo_fifa=None, fase_fifa="Grupos"):
     """Equipos sin historial usan 0 = media de la liga. En cancha neutral no hay ventaja de local."""
     ha = 0.0 if neutral else m["ha"]
     lam = math.exp(m["c"] + ha + m["att"].get(h, 0.0) - m["dfn"].get(a, 0.0))
@@ -160,6 +279,11 @@ def tasas_dc(m, h, a, neutral=False):
         aj = ajuste_altura_peru(h, a)
         lam *= aj["mult_h"]
         mu *= aj["mult_a"]
+    elif h in RANKING_FIFA_PUNTOS or a in RANKING_FIFA_PUNTOS or torneo_fifa:
+        aj_f = ajuste_contexto_seleccion(h, a, torneo_nombre=torneo_fifa, fase=fase_fifa, neutral=neutral)
+        if aj_f["activo"]:
+            lam *= aj_f["mult_h"]
+            mu *= aj_f["mult_a"]
     return lam, mu
 
 

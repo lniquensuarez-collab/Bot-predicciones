@@ -21,18 +21,27 @@ from engine import models as md
 # En Streamlit Cloud, al actualizar por Git sin reiniciar contenedor, recarga submódulos si quedaron en caché
 if (not hasattr(ft.Estado, "resumen_xg")
         or not hasattr(_cfg, "ALTITUD_PERU")
+        or not hasattr(_cfg, "COMPETENCIAS_FIFA")
         or not hasattr(md, "ajuste_altura_peru")
+        or not hasattr(md, "ajuste_contexto_seleccion")
         or not hasattr(bt, "simular_apuestas")
-        or not hasattr(data_bot, "importar_archivo_usuario")):
+        or not hasattr(data_bot, "ingestar_selecciones_fifa")):
     for _mod in (_cfg, _elo, db, data_bot, ft, md, bt):
         importlib.reload(_mod)
 
-from engine.config import ELO_A_LOG, EQUIPOS_INVITADOS, LIGAS, TORNEOS_INTERNACIONALES
+from engine.config import (
+    COMPETENCIAS_FIFA,
+    ELO_A_LOG,
+    EQUIPOS_INVITADOS,
+    LIGAS,
+    RANKING_FIFA_PUNTOS,
+    TORNEOS_INTERNACIONALES,
+)
 from engine.elo_system import prob_cruzada
 
 st.set_page_config(page_title="Ultimate AI V14", page_icon="⚽", layout="centered")
 st.title("⚽ ULTIMATE AI V14")
-st.caption("Dixon-Coles + Elo + clasificador · Ligas de clubes + 🇵🇪 Liga 1 Perú + Torneos Internacionales")
+st.caption("Dixon-Coles + Elo + Clasificador · Clubes + 🇵🇪 Liga 1 Perú + 🌎 Selecciones FIFA")
 
 LIGAS_EU = [n for n, c in LIGAS.items() if c["europa"]]
 
@@ -51,10 +60,10 @@ def ejecutar(fn, *args, **kw):
     return res
 
 
-@st.cache_data(show_spinner="Preparando liga (Elo, features, modelos)...")
-def preparar_liga(codigo, half_life, _version="v14.6"):
+@st.cache_data(show_spinner="Preparando competición (Elo, features, modelos)...")
+def preparar_liga(codigo, half_life, _version="v14.7"):
     df = db.cargar_partidos(codigo)
-    min_p = 80 if codigo == "PER" else 200
+    min_p = 80 if codigo in ("PER", "FIFA") else 200
     if len(df) < min_p:
         return None
     feats, est = ft.construir_features(df)
@@ -75,9 +84,16 @@ def lineas(df_tab):
 # ------------------------------- sidebar --------------------------------------
 with st.sidebar:
     st.header("⚙️ Parámetros")
+    ambito = st.selectbox("🌐 Modo de la Aplicación", ["⚽ Ligas de Clubes", "🌎 Selecciones FIFA"], index=0)
+    es_modo_fifa = ambito == "🌎 Selecciones FIFA"
     half_life = st.slider("Vida media del peso temporal (días)", 90, 900, 365, step=30)
     w_dc = st.slider("Peso de Dixon-Coles en el ensemble", 0.0, 1.0, 0.6, step=0.1)
-    liga_principal = st.selectbox("🏆 Liga (ranking y backtest)", list(LIGAS))
+    if es_modo_fifa:
+        torneo_fifa_principal = st.selectbox("🏆 Competencia FIFA", list(COMPETENCIAS_FIFA), index=0)
+        liga_principal = list(LIGAS)[0]
+    else:
+        liga_principal = st.selectbox("🏆 Liga (ranking y backtest)", list(LIGAS))
+        torneo_fifa_principal = list(COMPETENCIAS_FIFA)[0]
     casa_apuestas = st.selectbox("🏦 Casa de apuestas",
                                  ["Betano (Pago Anticipado +2 goles)", "Betsafe (Perú / Mercados)", "Estándar (90 min)"],
                                  index=0)
@@ -113,6 +129,14 @@ with db.sesion() as con:
         for a in av:
             st.warning(a)
         st.cache_data.clear()
+    if es_modo_fifa:
+        n_fifa_db = con.execute("SELECT COUNT(*) FROM partidos WHERE competicion='FIFA'").fetchone()[0]
+        if n_fifa_db == 0:
+            with st.spinner("Descargando historial internacional de Selecciones FIFA (últimos 4 años)..."):
+                n_f, av_f = data_bot.ingestar_selecciones_fifa(con, anios=4)
+            for a in av_f:
+                st.warning(a)
+            st.cache_data.clear()
 
 # Bases creadas con una versión anterior no tienen faltas/tarjetas/árbitros: se completan una sola vez por sesión.
 if not st.session_state.get("refresco_faltas_v2"):
@@ -146,16 +170,28 @@ with tab4:
             st.success(f"{r[0]} partidos procesados")
             for a in r[1]:
                 st.warning(a)
-    with st.expander("📂 Subir archivo CSV / Excel propio (ej. Liga 1 Perú o cuotas Betsafe / Betano)"):
+    st.divider()
+    st.markdown("#### 🌎 Selecciones Nacionales FIFA (Mundial, Copa América, Eurocopa, Eliminatorias, Nations League, Copa Oro, África, Asia)")
+    anios_fifa = st.slider("Años de historial internacional FIFA a descargar", 2, 8, 4, key="sl_anios_fifa")
+    if st.button("🌍 Descargar / actualizar Selecciones FIFA", use_container_width=True):
+        with db.sesion() as con:
+            rf = ejecutar(lambda progreso: data_bot.ingestar_selecciones_fifa(con, anios=anios_fifa, progreso=progreso))
+        if rf:
+            st.success(f"✅ {rf[0]} partidos internacionales de Selecciones FIFA procesados.")
+            for a in rf[1]:
+                st.warning(a)
+    with st.expander("📂 Subir archivo CSV / Excel propio (ej. Liga 1 Perú, Selecciones FIFA o cuotas Betsafe / Betano)"):
         st.caption("Puedes cargar un archivo `.csv` o `.xlsx` con columnas `Fecha`/`Date`, `Local`/`HomeTeam`, "
                    "`Visita`/`AwayTeam`, `GolesL`/`FTHG`, `GolesV`/`FTAG` (y opcionalmente `Cuota1`, `CuotaX`, `Cuota2`).")
+        opciones_up = list(LIGAS) + ["🌎 Selecciones FIFA (FIFA)"]
         idx_per = next((i for i, k in enumerate(LIGAS) if LIGAS[k]["codigo"] == "PER"), 0)
-        liga_up = st.selectbox("Liga destino", list(LIGAS), index=idx_per, key="up_liga")
+        liga_up = st.selectbox("Competición destino", opciones_up, index=idx_per, key="up_liga")
+        cod_up = "FIFA" if liga_up.startswith("🌎") else LIGAS[liga_up]["codigo"]
         fn_up = getattr(st, "file_uploader", None)
         arc = fn_up("Archivo CSV o Excel", type=["csv", "xlsx", "xls"], key="up_file") if callable(fn_up) else None
         if arc is not None and st.button("📥 Importar partidos a la base de datos"):
             with db.sesion() as con:
-                n_imp = data_bot.importar_archivo_usuario(con, arc.getvalue(), arc.name, LIGAS[liga_up]["codigo"])
+                n_imp = data_bot.importar_archivo_usuario(con, arc.getvalue(), arc.name, cod_up)
             st.cache_data.clear()
             st.success(f"✅ {n_imp} partidos importados en {liga_up}.")
     if st.button("🧹 Limpiar caché de cálculos"):
@@ -163,36 +199,64 @@ with tab4:
         st.rerun()
 
 # ------------------------------ liga principal --------------------------------
-P_main = preparar_liga(LIGAS[liga_principal]["codigo"], half_life)
+cod_activo_principal = "FIFA" if es_modo_fifa else LIGAS[liga_principal]["codigo"]
+P_main = preparar_liga(cod_activo_principal, half_life)
 
 # ------------------------------- PREDICCIÓN -----------------------------------
 with tab1:
-    cruzado = st.checkbox("🌍 Partido europeo entre ligas distintas (Champions / Europa / Conference League)")
-    neutral = st.checkbox("Cancha neutral (ej. una final)", value=False)
-
-    if cruzado:
-        l1, l2 = st.columns(2)
-        lig_h = l1.selectbox("Liga del local", LIGAS_EU, index=0, key="lig_h")
-        lig_a = l2.selectbox("Liga de la visita", LIGAS_EU, index=min(3, len(LIGAS_EU) - 1), key="lig_a")
-        with st.expander("⚖️ Fuerza relativa de las ligas (supuesto editable)"):
-            st.caption("Los archivos solo contienen partidos de cada liga contra sí misma, así que la diferencia de "
-                       "nivel entre ligas NO se puede estimar con los datos. Estos valores (puntos Elo, Premier = 0) "
-                       "son un supuesto inicial: ajústalos según tu criterio; los resultados dependen de ellos.")
-            fuerza = {n: st.slider(n, -400, 100, int(LIGAS[n]["fuerza"]), step=5, key=f"fz_{n}") for n in LIGAS_EU}
-    else:
-        lig_h = lig_a = liga_principal
+    if es_modo_fifa:
+        st.markdown("#### 🌎 Modo Selecciones Nacionales FIFA")
+        cf1, cf2 = st.columns(2)
+        idx_tf = list(COMPETENCIAS_FIFA).index(torneo_fifa_principal) if torneo_fifa_principal in COMPETENCIAS_FIFA else 0
+        torneo_partido = cf1.selectbox("🏆 Torneo / Competencia FIFA", list(COMPETENCIAS_FIFA), index=idx_tf, key="fifa_torneo")
+        fase_partido = cf2.selectbox(
+            "⚔️ Instancia / Fase del Encuentro",
+            ["📊 Fase de Grupos / Eliminatoria Regular", "⚔️ Mata-Mata / Eliminación Directa (Octavos, Cuartos, Semis, Final)"],
+            index=0,
+            key="fifa_fase",
+        )
+        neutral_def = bool(COMPETENCIAS_FIFA[torneo_partido]["neutral_defecto"])
+        neutral = st.checkbox("🏟️ Sede neutral (ej. Mundial, Copa América, Eurocopa, Copa Oro)", value=neutral_def)
+        cruzado = False
+        lig_h = lig_a = "FIFA"
         fuerza = {}
+        P_h = P_a = P_main
+        if P_h is None:
+            st.info("Aún no se han descargado los datos de Selecciones FIFA. Ve a **🗄️ Datos** y pulsa **🌍 Descargar / actualizar Selecciones FIFA**.")
+            st.stop()
+        cross = False
+        with db.sesion() as con:
+            eq_h = data_bot.obtener_equipos_vigentes(con, "FIFA")
+            eq_a = eq_h
+    else:
+        torneo_partido = None
+        fase_partido = "Grupos"
+        cruzado = st.checkbox("🌍 Partido europeo entre ligas distintas (Champions / Europa / Conference League)")
+        neutral = st.checkbox("Cancha neutral (ej. una final)", value=False)
 
-    P_h = P_main if lig_h == liga_principal else preparar_liga(LIGAS[lig_h]["codigo"], half_life)
-    P_a = P_h if lig_a == lig_h else preparar_liga(LIGAS[lig_a]["codigo"], half_life)
-    if P_h is None or P_a is None:
-        st.info("Una de las ligas no tiene datos suficientes (mínimo 200 partidos). Ve a **🗄️ Datos**.")
-        st.stop()
-    cross = cruzado and lig_h != lig_a
+        if cruzado:
+            l1, l2 = st.columns(2)
+            lig_h = l1.selectbox("Liga del local", LIGAS_EU, index=0, key="lig_h")
+            lig_a = l2.selectbox("Liga de la visita", LIGAS_EU, index=min(3, len(LIGAS_EU) - 1), key="lig_a")
+            with st.expander("⚖️ Fuerza relativa de las ligas (supuesto editable)"):
+                st.caption("Los archivos solo contienen partidos de cada liga contra sí misma, así que la diferencia de "
+                           "nivel entre ligas NO se puede estimar con los datos. Estos valores (puntos Elo, Premier = 0) "
+                           "son un supuesto inicial: ajústalos según tu criterio; los resultados dependen de ellos.")
+                fuerza = {n: st.slider(n, -400, 100, int(LIGAS[n]["fuerza"]), step=5, key=f"fz_{n}") for n in LIGAS_EU}
+        else:
+            lig_h = lig_a = liga_principal
+            fuerza = {}
 
-    with db.sesion() as con:
-        eq_h = data_bot.obtener_equipos_vigentes(con, LIGAS[lig_h]["codigo"])
-        eq_a = data_bot.obtener_equipos_vigentes(con, LIGAS[lig_a]["codigo"])
+        P_h = P_main if lig_h == liga_principal else preparar_liga(LIGAS[lig_h]["codigo"], half_life)
+        P_a = P_h if lig_a == lig_h else preparar_liga(LIGAS[lig_a]["codigo"], half_life)
+        if P_h is None or P_a is None:
+            st.info("Una de las ligas no tiene datos suficientes (mínimo 200 partidos). Ve a **🗄️ Datos**.")
+            st.stop()
+        cross = cruzado and lig_h != lig_a
+
+        with db.sesion() as con:
+            eq_h = data_bot.obtener_equipos_vigentes(con, LIGAS[lig_h]["codigo"])
+            eq_a = data_bot.obtener_equipos_vigentes(con, LIGAS[lig_a]["codigo"])
 
     c1, c2 = st.columns(2)
     home = c1.selectbox("🏠 Local:", eq_h, index=0)
@@ -200,7 +264,7 @@ with tab1:
     fecha = pd.Timestamp(st.date_input("📅 Fecha del partido", value=date.today()))
 
     fn_arbs = getattr(P_h["estado"], "arbitros_disponibles", None)
-    arbs_disp = fn_arbs() if (not cross and callable(fn_arbs)) else []
+    arbs_disp = fn_arbs() if (not cross and not es_modo_fifa and callable(fn_arbs)) else []
     with st.expander("🎛️ Escenario (ajustes manuales y árbitro)"):
         st.caption("Si modificas los % de ataque/defensa se usa solo Dixon-Coles. El árbitro ajusta faltas y tarjetas.")
         arbitro_sel = st.selectbox("⚖️ Árbitro designado (opcional, ajusta faltas y tarjetas)",
@@ -238,7 +302,11 @@ with tab1:
                                  neutral, tasa_empate=tasa_emp)
         else:
             tasa_emp = float((dh["FTR"] == "D").mean())
-            lam, mu = md.tasas_dc(P_h["dc"], home, away, neutral)
+            if es_modo_fifa and "mata" in str(fase_partido).lower():
+                tasa_emp = min(0.36, tasa_emp * 1.12)
+            lam, mu = md.tasas_dc(P_h["dc"], home, away, neutral,
+                                  torneo_fifa=torneo_partido if es_modo_fifa else None,
+                                  fase_fifa=fase_partido if es_modo_fifa else "Grupos")
             rho = P_h["dc"]["rho"]
             p_elo = est_h.elo.prob_1x2(home, away, neutral, tasa_empate=tasa_emp)
         lam *= math.exp((att_h + def_a) / 100.0)
@@ -264,7 +332,7 @@ with tab1:
         n_h = est_h.n.get(home, 0)
         n_a = est_a.n.get(away, 0)
 
-        N_REF = 38.0
+        N_REF = 20.0 if es_modo_fifa else 38.0
         f_h = float(np.clip(math.sqrt(N_REF / max(n_h, 5)), 0.7, 2.0))
         f_a = float(np.clip(math.sqrt(N_REF / max(n_a, 5)), 0.7, 2.0))
 
@@ -303,7 +371,7 @@ with tab1:
         if basico:
             st.caption(f"Liga sin stats detalladas (solo 1X2 y goles) | {n_h} PJ vs {n_a} PJ · {consenso['estado']}")
         else:
-            nota_incert = f" ⚠️ (incertidumbre alta: {n_h if n_h < 15 else n_a} PJ)" if min(n_h, n_a) < 15 else ""
+            nota_incert = f" ⚠️ (incertidumbre alta: {n_h if n_h < 10 else n_a} PJ)" if min(n_h, n_a) < 10 else ""
             st.caption(f"Elo interno: {est_h.elo.rating(home):.0f} ({n_h} PJ) vs {est_a.elo.rating(away):.0f} ({n_a} PJ)"
                        + (" · cancha neutral" if neutral else "") + f" · Modelo: {usado}{nota_incert}")
             if consenso["es_trampa"]:
@@ -315,17 +383,55 @@ with tab1:
             st.warning("Partido entre ligas: el resultado depende del supuesto de fuerza relativa de cada liga "
                        "(ver el panel ⚖️). No hay datos propios para validarlo.")
 
-        fn_alt = getattr(md, "ajuste_altura_peru", None)
-        if callable(fn_alt) and not neutral:
-            info_alt = fn_alt(home, away)
-            if info_alt.get("activo") and info_alt.get("resumen"):
-                st.info(info_alt["resumen"])
+        info_fifa_ctx = None
+        if es_modo_fifa:
+            fn_ctx_f = getattr(md, "ajuste_contexto_seleccion", None)
+            if callable(fn_ctx_f):
+                info_fifa_ctx = fn_ctx_f(home, away, torneo_nombre=torneo_partido, fase=fase_partido, neutral=neutral)
+                if info_fifa_ctx.get("activo") and info_fifa_ctx.get("resumen"):
+                    st.info(info_fifa_ctx["resumen"])
+        else:
+            fn_alt = getattr(md, "ajuste_altura_peru", None)
+            if callable(fn_alt) and not neutral:
+                info_alt = fn_alt(home, away)
+                if info_alt.get("activo") and info_alt.get("resumen"):
+                    st.info(info_alt["resumen"])
 
-        # ---- Ganador (todas las ligas) ----
+        # ---- Ganador (todas las ligas, 90 min reglamentarios) ----
         for col, nombre, i in zip(st.columns(3), ["Local", "Empate", "Visita"], range(3)):
             col.metric(nombre, f"{p_fin[i] * 100:.1f}%")
             col.caption(f"rango {lo[i] * 100:.0f}–{hi[i] * 100:.0f}%")
             col.progress(float(p_fin[i]))
+
+        if es_modo_fifa and info_fifa_ctx and info_fifa_ctx.get("es_matamata"):
+            fn_mm = getattr(md, "probabilidad_clasificacion_matamata", None)
+            if callable(fn_mm):
+                mm = fn_mm(p_fin, home, away)
+                st.markdown("#### 🏅 ¿Quién Clasifica a la Siguiente Ronda? (Mata-Mata: 90' + Prórroga + Penales)")
+                m1, m2 = st.columns(2)
+                m1.metric(f"Clasifica {home}", f"{mm['clasifica_h'] * 100:.1f}%",
+                          f"Cuota justa: {mm['cuota_justa_clas_h']:.2f}")
+                m2.metric(f"Clasifica {away}", f"{mm['clasifica_a'] * 100:.1f}%",
+                          f"Cuota justa: {mm['cuota_justa_clas_a']:.2f}")
+                df_mm = pd.DataFrame([
+                    {
+                        "Selección": home,
+                        "Gana en 90' %": round(mm["gana_90_h"] * 100, 1),
+                        "Gana en Tiempo Extra %": round(mm["gana_et_h"] * 100, 1),
+                        "Gana por Penales %": round(mm["gana_pen_h"] * 100, 1),
+                        "TOTAL CLASIFICA %": round(mm["clasifica_h"] * 100, 1),
+                        "Cuota Justa Clasificar": mm["cuota_justa_clas_h"],
+                    },
+                    {
+                        "Selección": away,
+                        "Gana en 90' %": round(mm["gana_90_a"] * 100, 1),
+                        "Gana en Tiempo Extra %": round(mm["gana_et_a"] * 100, 1),
+                        "Gana por Penales %": round(mm["gana_pen_a"] * 100, 1),
+                        "TOTAL CLASIFICA %": round(mm["clasifica_a"] * 100, 1),
+                        "Cuota Justa Clasificar": mm["cuota_justa_clas_a"],
+                    },
+                ]).set_index("Selección")
+                st.dataframe(df_mm, use_container_width=True)
 
         fn_pa = getattr(md, "beneficio_pago_anticipado_2g", None)
         pa_info = fn_pa(M, p_fin) if callable(fn_pa) else None
@@ -526,8 +632,9 @@ with tab1:
                      for l in [10.5, 12.5, 14.5]}, index=[home[:18], away[:18]])
 
             if disp["tarjetas"]:
+                mult_tf = float(info_fifa_ctx["mult_tarj"]) if (es_modo_fifa and info_fifa_ctx) else 1.0
                 yh, ya = esperados(est_h, est_a, home, away, "Y", "YA", dh, "HY", da, "AY")
-                yh, ya = yh * f_arb["amarillas"], ya * f_arb["amarillas"]
+                yh, ya = yh * f_arb["amarillas"] * mult_tf, ya * f_arb["amarillas"] * mult_tf
                 equipo["Amarillas"] = [yh, ya, yh + ya]
                 
                 r_tot = disp_partido(dh, da, home, away, "HY", "AY")
@@ -542,9 +649,10 @@ with tab1:
                      for l in [0.5, 1.5, 2.5, 3.5]}, index=[home[:18], away[:18]])
 
             if disp["tarjetas"] and disp["rojas"]:
+                mult_rf = float(info_fifa_ctx["mult_tarj"]) if (es_modo_fifa and info_fifa_ctx) else 1.0
                 rh, ra = esperados(est_h, est_a, home, away, "R", "RA", dh, "HR", da, "AR")
-                rh = (0.5 * rh + 0.5 * dh["HR"].mean()) * f_arb["rojas"]
-                ra = (0.5 * ra + 0.5 * da["AR"].mean()) * f_arb["rojas"]
+                rh = (0.5 * rh + 0.5 * dh["HR"].mean()) * f_arb["rojas"] * mult_rf
+                ra = (0.5 * ra + 0.5 * da["AR"].mean()) * f_arb["rojas"] * mult_rf
                 equipo["Rojas"] = [rh, ra, rh + ra]
                 equipo["P(≥1 roja) %"] = [(1 - math.exp(-m)) * 100 for m in (rh, ra, rh + ra)]
 
@@ -587,29 +695,33 @@ with tab1:
 # --------------------------------- RANKING ------------------------------------
 with tab2:
     if P_main is None:
-        st.info("Esta liga no tiene datos suficientes. Ve a **🗄️ Datos**.")
+        st.info("Esta competición no tiene datos suficientes. Ve a **🗄️ Datos**.")
     else:
         est = P_main["estado"]
         with db.sesion() as con:
-            eqs = data_bot.obtener_equipos_vigentes(con, LIGAS[liga_principal]["codigo"])
+            eqs = data_bot.obtener_equipos_vigentes(con, cod_activo_principal)
         fn_rxg = getattr(est, "resumen_xg", None)
         rk_data = {
             "Equipo": eqs,
             "Elo": [round(est.elo.rating(t)) for t in eqs],
-            "Partidos": [est.n.get(t, 0) for t in eqs],
-            "Forma (últ. 5, pts)": [sum(est.pts.get(t, [])[-5:]) for t in eqs],
         }
+        if es_modo_fifa:
+            rk_data["Puntos FIFA"] = [int(RANKING_FIFA_PUNTOS.get(t, 1380)) for t in eqs]
+        rk_data["Partidos"] = [est.n.get(t, 0) for t in eqs]
+        rk_data["Forma (últ. 5, pts)"] = [sum(est.pts.get(t, [])[-5:]) for t in eqs]
         if callable(fn_rxg):
             rk_data["xGF (EWMA)"] = [round(fn_rxg(t)["xGF"], 2) for t in eqs]
             rk_data["xGA (EWMA)"] = [round(fn_rxg(t)["xGA"], 2) for t in eqs]
         rk = pd.DataFrame(rk_data)
-        rk = rk.sort_values("Elo", ascending=False).reset_index(drop=True)
+        col_ord = "Puntos FIFA" if es_modo_fifa else "Elo"
+        rk = rk.sort_values([col_ord, "Elo"], ascending=False).reset_index(drop=True)
         rk.index += 1
-        st.caption("El Elo solo es comparable dentro de la misma liga.")
+        st.caption("En Selecciones FIFA se combina el Ranking FIFA oficial con el Elo dinámico reciente." if es_modo_fifa
+                   else "El Elo solo es comparable dentro de la misma liga.")
         st.dataframe(rk, use_container_width=True)
         st.bar_chart(rk.head(15).set_index("Equipo")["Elo"])
         with db.sesion() as con:
-            db.guardar_elo(con, LIGAS[liga_principal]["codigo"], est.elo.ratings, est.n)
+            db.guardar_elo(con, cod_activo_principal, est.elo.ratings, est.n)
 
 # ------------------------------- COMBINADAS -----------------------------------
 with tab_comb:
@@ -624,19 +736,21 @@ with tab_comb:
     fecha_jornada = pd.Timestamp(col_f1.date_input("📅 Fecha de los partidos a buscar", value=date.today(), key="f_comb"))
     ventana_dias = col_f2.selectbox("🗓️ Rango de búsqueda", [0, 1, 2, 3], index=0,
                                     format_func=lambda d: "Solo ese día" if d == 0 else f"Ese día + {d} día(s)")
-    opciones_busq = list(LIGAS) + list(TORNEOS_INTERNACIONALES)
+    opciones_busq = (list(COMPETENCIAS_FIFA) + list(LIGAS) + list(TORNEOS_INTERNACIONALES)
+                     if es_modo_fifa else list(LIGAS) + list(TORNEOS_INTERNACIONALES) + list(COMPETENCIAS_FIFA))
+    def_busq = list(COMPETENCIAS_FIFA) if es_modo_fifa else (list(LIGAS) + list(TORNEOS_INTERNACIONALES))
     ligas_busq = st.multiselect("🏆 Ligas y Torneos Internacionales donde buscar partidos del día",
-                                opciones_busq, default=opciones_busq, key="ligs_comb")
+                                opciones_busq, default=def_busq, key="ligs_comb")
 
     b_busq, b_limp = st.columns([3, 1])
     if b_busq.button("🔎 Buscar partidos del día", use_container_width=True):
-        with st.spinner("Buscando partidos programados en las ligas y torneos internacionales..."):
+        with st.spinner("Buscando partidos programados en las competiciones seleccionadas..."):
             with db.sesion() as con:
                 fn_busq = getattr(data_bot, "buscar_partidos_del_dia", None)
                 hallados = fn_busq(con, fecha_jornada, ligas_busq, ventana_dias=ventana_dias) if callable(fn_busq) else []
         st.session_state["partidos_jornada"] = hallados
         if hallados:
-            st.success(f"✅ Se encontraron {len(hallados)} partido(s) en las ligas y torneos seleccionados.")
+            st.success(f"✅ Se encontraron {len(hallados)} partido(s) en las competiciones seleccionadas.")
         else:
             st.warning("No se encontraron partidos programados en esa fecha para las competiciones seleccionadas. "
                        "Puedes probar ampliando el rango de días o agregar partidos manualmente abajo.")
@@ -644,12 +758,14 @@ with tab_comb:
     if b_limp.button("🗑️ Vaciar lista", use_container_width=True):
         st.session_state["partidos_jornada"] = []
 
-    with st.expander("➕ Agregar partidos manualmente a la lista (ligas domésticas, Champions, Libertadores o clubes invitados)"):
-        es_int_man = st.checkbox("🌐 Cruce internacional / entre distintas ligas o club invitado (Champions, Libertadores, etc.)",
+    with st.expander("➕ Agregar partidos manualmente a la lista (ligas domésticas, Selecciones FIFA, Champions o Libertadores)"):
+        es_int_man = st.checkbox("🌐 Cruce internacional de clubes (Champions, Libertadores, etc.)",
                                  value=False, key="cm_int")
         if not es_int_man:
-            lig_man = st.selectbox("Liga del partido", list(LIGAS), index=list(LIGAS).index(liga_principal), key="cm_liga")
-            cod_man = LIGAS[lig_man]["codigo"]
+            opciones_man = (list(COMPETENCIAS_FIFA) + list(LIGAS)) if es_modo_fifa else (list(LIGAS) + list(COMPETENCIAS_FIFA))
+            idx_man_def = 0 if es_modo_fifa else opciones_man.index(liga_principal)
+            lig_man = st.selectbox("Liga / Competencia del partido", opciones_man, index=idx_man_def, key="cm_liga")
+            cod_man = "FIFA" if lig_man in COMPETENCIAS_FIFA else LIGAS[lig_man]["codigo"]
             with db.sesion() as con:
                 eqs_man = data_bot.obtener_equipos_vigentes(con, cod_man)
             if len(eqs_man) >= 2:
@@ -726,7 +842,7 @@ with tab_comb:
             })
             mapa_ligas = {}
             for cod_u in cods_unicos:
-                mapa_ligas[cod_u] = (P_main if cod_u == LIGAS[liga_principal]["codigo"]
+                mapa_ligas[cod_u] = (P_main if cod_u == cod_activo_principal
                                      else preparar_liga(cod_u, half_life))
             res_scan = md.escanear_jornada(lista_actual, mapa_ligas, fecha_jornada, w_dc=w_dc, sigma=0.12)
 

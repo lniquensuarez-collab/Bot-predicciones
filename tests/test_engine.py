@@ -230,6 +230,26 @@ def test_motor():
         pa_2g = md.beneficio_pago_anticipado_2g(M, md.probs_1x2(M))
         assert pa_2g["prob_h_pa"] > md.probs_1x2(M)[0] and pa_2g["bono_h_pp"] > 0.0
 
+        # Selecciones FIFA: Ranking FIFA, Altura (Bolivia en El Alto vs selección de llano), Mata-Mata y CSV internacional
+        ctx_bol = md.ajuste_contexto_seleccion("Bolivia", "Venezuela",
+                                               torneo_nombre="🌎 Eliminatorias CONMEBOL", fase="Grupos", neutral=False)
+        assert ctx_bol["activo"] and ctx_bol["msnm_h"] >= 3600 and ctx_bol["mult_h"] > 1.05
+        ctx_mm = md.ajuste_contexto_seleccion("Argentina", "France",
+                                              torneo_nombre="🏆 Copa del Mundo FIFA", fase="Mata-Mata (Final)", neutral=True)
+        assert ctx_mm["activo"] and ctx_mm["es_matamata"] and ctx_mm["mult_tarj"] > 1.05
+        mm_prob = md.probabilidad_clasificacion_matamata(md.probs_1x2(M), "Argentina", "France")
+        assert abs(mm_prob["clasifica_h"] + mm_prob["clasifica_a"] - 1.0) < 1e-6
+        df_fifa_mock = pd.DataFrame({
+            "date": ["2025-10-15", "2025-11-18"],
+            "home_team": ["Argentina", "Bolivia"],
+            "away_team": ["Peru", "Brazil"],
+            "home_score": [2, 1],
+            "away_score": [0, 0],
+            "tournament": ["FIFA World Cup qualification", "FIFA World Cup qualification"],
+        })
+        filas_f = data_bot._filas_fifa_csv(df_fifa_mock, anios=4)
+        assert len(filas_f) == 2 and filas_f[0]["competicion"] == "FIFA" and filas_f[0]["tiros_p_l"] >= 2
+
         # Modo europeo entre ligas
         df2 = db.cargar_partidos("T2", con)
         f2, est2 = construir_features(df2)
