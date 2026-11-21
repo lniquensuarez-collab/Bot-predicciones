@@ -5,7 +5,11 @@ import pandas as pd
 
 from .elo_system import EloSystem
 
-FEATS = ["elo_diff", "att_diff", "def_diff", "xg_diff", "xga_diff", "sot_diff", "cor_diff", "form_diff", "rest_diff"]
+FEATS = [
+    "elo_diff", "elo_mean", "att_diff", "def_diff", "xg_diff", "xga_diff",
+    "sot_diff", "cor_diff", "dom_diff", "luck_xg_diff", "volatilidad_goles",
+    "form_diff", "momentum_diff", "h2h_diff", "rest_diff",
+]
 
 
 def _f(r, k):
@@ -29,6 +33,7 @@ class Estado:
         self.peso_lado = peso_lado
         self.elo = elo or EloSystem()
         self.ewma, self.n, self.pts, self.last = {}, {}, {}, {}
+        self.h2h = {}                      # Historial de enfrentamientos directos (H2H) sin fuga
         self.g_sum, self.g_count = {}, {}  # Para promedios globales de la liga
         self.ref_stats = {}                # Estadísticas acumuladas por árbitro
         self.temporada_actual = None
@@ -76,28 +81,61 @@ class Estado:
         return {"xGF": xgf, "xGA": xga, "GF": gf, "GC": gc, "suerte": float(suerte)}
 
     def features(self, h, a, fecha):
+        def _val_imputado(eq, lado, s):
+            v = self.valor(eq, lado, s)
+            if np.isnan(v):
+                v = self.g_sum.get((lado, s), 0.0) / max(1, self.g_count.get((lado, s), 0))
+            return float(0.0 if np.isnan(v) else v)
+
         def diff(s):
-            vh = self.valor(h, "H", s)
-            va = self.valor(a, "A", s)
-
-            # Imputación: si no hay datos del equipo, usar el promedio histórico de la liga para ese lado
-            if np.isnan(vh):
-                vh = self.g_sum.get(("H", s), 0.0) / max(1, self.g_count.get(("H", s), 0))
-            if np.isnan(va):
-                va = self.g_sum.get(("A", s), 0.0) / max(1, self.g_count.get(("A", s), 0))
-
-            return vh - va
+            return _val_imputado(h, "H", s) - _val_imputado(a, "A", s)
 
         def descanso(t):
             l = self.last.get(t)
             return min((fecha - l).days, 14) if l is not None else 7
 
+        def _momentum(t):
+            p = self.pts.get(t, [])
+            if len(p) < 3:
+                return 0.0
+            corta = float(np.mean(p[-3:]))
+            larga = float(np.mean(p[-12:]))
+            return corta - larga
+
+        elo_h, elo_a = self.elo.rating(h), self.elo.rating(a)
+        gf_h, gc_h = _val_imputado(h, "H", "GF"), _val_imputado(h, "H", "GC")
+        gf_a, gc_a = _val_imputado(a, "A", "GF"), _val_imputado(a, "A", "GC")
+        xgf_h = _val_imputado(h, "H", "xGF")
+        xgf_a = _val_imputado(a, "A", "xGF")
+
+        # Dominio territorial y amenaza a balón parado (Tiros a puerta + Córners a favor vs concedidos)
+        dom_h = (_val_imputado(h, "H", "ST") + 0.65 * _val_imputado(h, "H", "C")) - (
+            _val_imputado(h, "H", "STA") + 0.65 * _val_imputado(h, "H", "CA")
+        )
+        dom_a = (_val_imputado(a, "A", "ST") + 0.65 * _val_imputado(a, "A", "C")) - (
+            _val_imputado(a, "A", "STA") + 0.65 * _val_imputado(a, "A", "CA")
+        )
+
+        # Enfrentamientos directos (H2H) con suavizado bayesiano (prior = 3 partidos)
+        par_key = tuple(sorted((h, a)))
+        reg_h2h = self.h2h.get(par_key, {"n": 0, h: 0.0, a: 0.0})
+        h2h_diff = float((reg_h2h.get(h, 0.0) - reg_h2h.get(a, 0.0)) / (reg_h2h.get("n", 0) + 3.0))
+
         return {
-            "elo_diff": self.elo.rating(h) - self.elo.rating(a),
-            "att_diff": diff("GF"), "def_diff": diff("GC"),
-            "xg_diff": diff("xGF"), "xga_diff": diff("xGA"),
-            "sot_diff": diff("ST"), "cor_diff": diff("C"),
+            "elo_diff": elo_h - elo_a,
+            "elo_mean": 0.5 * (elo_h + elo_a) - 1500.0,
+            "att_diff": gf_h - gf_a,
+            "def_diff": gc_h - gc_a,
+            "xg_diff": diff("xGF"),
+            "xga_diff": diff("xGA"),
+            "sot_diff": diff("ST"),
+            "cor_diff": diff("C"),
+            "dom_diff": dom_h - dom_a,
+            "luck_xg_diff": (gf_h - xgf_h) - (gf_a - xgf_a),
+            "volatilidad_goles": 0.5 * (gf_h + gc_h + gf_a + gc_a),
             "form_diff": sum(self.pts.get(h, [])[-5:]) - sum(self.pts.get(a, [])[-5:]),
+            "momentum_diff": _momentum(h) - _momentum(a),
+            "h2h_diff": h2h_diff,
             "rest_diff": descanso(h) - descanso(a),
             "n_prev": min(self.n.get(h, 0), self.n.get(a, 0)),
         }
@@ -147,10 +185,15 @@ class Estado:
                     rs[s_k] += v_tot
                     rs[f"n_{s_k}"] += 1
 
-        self.elo.update(h, a, gl, gv)
+        self.elo.update(h, a, gl, gv, xg_l=xgh, xg_v=xga)
         ph, pa = {"H": (3, 0), "D": (1, 1), "A": (0, 3)}[r["FTR"]]
         self.pts.setdefault(h, []).append(ph)
         self.pts.setdefault(a, []).append(pa)
+        par_key = tuple(sorted((h, a)))
+        reg_h2h = self.h2h.setdefault(par_key, {"n": 0})
+        reg_h2h["n"] = reg_h2h.get("n", 0) + 1
+        reg_h2h[h] = 0.85 * reg_h2h.get(h, 0.0) + float(ph)
+        reg_h2h[a] = 0.85 * reg_h2h.get(a, 0.0) + float(pa)
         self.last[h] = self.last[a] = r["Date"]
         self.n[h] = self.n.get(h, 0) + 1
         self.n[a] = self.n.get(a, 0) + 1

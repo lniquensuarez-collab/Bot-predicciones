@@ -50,10 +50,20 @@ class EloSystem:
     def prob_1x2(self, h, a, neutral=False, tasa_empate=0.27):
         return esperado_a_1x2(self.esperado(h, a, neutral), tasa_empate=tasa_empate)
 
-    def update(self, h, a, goles_l, goles_v):
+    def update(self, h, a, goles_l, goles_v, xg_l=None, xg_v=None, peso_xg=0.30):
         e = self.esperado(h, a)
-        w = 1.0 if goles_l > goles_v else (0.5 if goles_l == goles_v else 0.0)
-        g = _margen(abs(goles_l - goles_v)) if self.usar_margen else 1.0
+        w_gol = 1.0 if goles_l > goles_v else (0.5 if goles_l == goles_v else 0.0)
+        dif_gol = abs(float(goles_l) - float(goles_v))
+        if (xg_l is not None and xg_v is not None
+                and not np.isnan(xg_l) and not np.isnan(xg_v) and peso_xg > 0.0):
+            d_xg = float(xg_l) - float(xg_v)
+            w_xg = float(1.0 / (1.0 + np.exp(-d_xg / 0.65)))
+            w = (1.0 - peso_xg) * w_gol + peso_xg * w_xg
+            dif_ef = (1.0 - peso_xg) * dif_gol + peso_xg * abs(d_xg)
+        else:
+            w = w_gol
+            dif_ef = dif_gol
+        g = _margen(int(round(dif_ef))) if self.usar_margen else 1.0
         delta = self.k_base * g * (w - e)
         self.ratings[h] = self.rating(h) + delta
         self.ratings[a] = self.rating(a) - delta

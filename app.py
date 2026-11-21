@@ -20,12 +20,15 @@ from engine import models as md
 
 # En Streamlit Cloud, al actualizar por Git sin reiniciar contenedor, recarga submódulos si quedaron en caché
 if (not hasattr(ft.Estado, "resumen_xg")
+        or "momentum_diff" not in getattr(ft, "FEATS", [])
         or not hasattr(_cfg, "ALTITUD_PERU")
         or not hasattr(_cfg, "COMPETENCIAS_FIFA")
         or "neutral_defecto" not in next(iter(getattr(_cfg, "COMPETENCIAS_FIFA", {}).values()), {})
         or not hasattr(md, "ajuste_altura_peru")
         or not hasattr(md, "ajuste_contexto_seleccion")
+        or not hasattr(md, "actualizar_prob_bayesiana_mercado")
         or not hasattr(bt, "simular_apuestas")
+        or not hasattr(db, "registrar_apuesta")
         or not hasattr(data_bot, "ingestar_selecciones_fifa")):
     for _mod in (_cfg, _elo, db, data_bot, ft, md, bt):
         importlib.reload(_mod)
@@ -61,8 +64,8 @@ def ejecutar(fn, *args, **kw):
     return res
 
 
-@st.cache_data(show_spinner="Preparando competición (Elo, features, modelos)...")
-def preparar_liga(codigo, half_life, _version="v14.7"):
+@st.cache_data(show_spinner="Preparando competición (Elo-xG, features, modelos híbridos)...")
+def preparar_liga(codigo, half_life, _version="v14.8"):
     df = db.cargar_partidos(codigo)
     min_p = 80 if codigo in ("PER", "FIFA") else 200
     if len(df) < min_p:
@@ -102,8 +105,8 @@ with st.sidebar:
     ir_comb = st.button("🎯 Combinadas", use_container_width=True,
                         help="Abre la pestaña de Escáner de Jornada, Partidos del Día y Armador de Combinadas")
 
-tab1, tab_comb, tab2, tab3, tab4, tab5 = st.tabs([
-    "🔮 Predicción", "🎯 Combinadas", "🏅 Ranking Elo", "📈 Backtest", "🗄️ Datos", "ℹ️ Metodología"
+tab1, tab_comb, tab_bit, tab2, tab3, tab4, tab5 = st.tabs([
+    "🔮 Predicción", "🎯 Combinadas", "📓 Bitácora", "🏅 Ranking Elo", "📈 Backtest", "🗄️ Datos", "ℹ️ Metodología"
 ])
 
 if ir_comb:
@@ -487,9 +490,14 @@ with tab1:
             comp = pd.DataFrame({"Local %": [p_elo[0], p_dc[0], p_lr[0]], "Empate %": [p_elo[1], p_dc[1], p_lr[1]],
                                  "Visita %": [p_elo[2], p_dc[2], p_lr[2]]},
                                 index=["Solo Elo", "Dixon-Coles", "Clasificador"]) * 100
+            bay_info = None
             if min(o_h, o_d, o_a) > 1:
                 p_mkt = db.desmargenar_cuotas([o_h, o_d, o_a])
+                fn_bay = getattr(md, "actualizar_prob_bayesiana_mercado", None)
+                bay_info = (fn_bay(p_fin, p_mkt, n_h=n_h, n_a=n_a, spread_pp=consenso["spread_pp"])
+                            if callable(fn_bay) else {"p_post": p_fin, "w_modelo": 1.0, "w_mercado": 0.0})
                 comp.loc["Mercado (sin margen)"] = p_mkt * 100
+                comp.loc["Fusión Bayesiana (Modelo+Mercado)"] = bay_info["p_post"] * 100
                 comp.loc["Diferencia vs mercado (pp)"] = (p_fin - p_mkt) * 100
             st.markdown("#### 📊 Comparación de modelos")
             st.dataframe(comp.round(1).fillna("-"), use_container_width=True)
@@ -499,16 +507,35 @@ with tab1:
                 usar_pa = bool(pa_info and casa_apuestas.startswith(("Betano", "Betsafe")))
                 probs_ev = ([pa_info["prob_h_pa"], float(p_fin[1]), pa_info["prob_a_pa"]]
                             if usar_pa else list(p_fin))
+                p_bay_base = bay_info["p_post"] if bay_info else p_fin
+                probs_bay = ([min(0.985, float(p_bay_base[0]) + pa_info["bono_h_pp"] / 100.0),
+                              float(p_bay_base[1]),
+                              min(0.985, float(p_bay_base[2]) + pa_info["bono_a_pp"] / 100.0)]
+                             if usar_pa else list(p_bay_base))
                 p25_ev = ([min(0.98, float(p25[0]) + pa_info["bono_h_pp"] / 100.0),
                            float(p25[1]),
                            min(0.98, float(p25[2]) + pa_info["bono_a_pp"] / 100.0)]
                           if usar_pa else list(p25))
+                if bay_info:
+                    st.caption(
+                        f"⚖️ **Anclaje Bayesiano al Mercado:** pondera `{bay_info['w_modelo'] * 100:.0f}%` nuestro Ensemble "
+                        f"y `{bay_info['w_mercado'] * 100:.0f}%` la cuota desmargenada (según muestra `{min(n_h, n_a)} PJ` y consenso)."
+                    )
                 if usar_pa:
                     st.caption(f"Incluye bono de **Pago Anticipado (+2 goles)** en **{casa_apuestas.split()[0]}** para `1` y `2`.")
                 filas_ev = {}
-                for nom_m, p_m, p25_m, c_m in zip(["Local (1)", "Empate (X)", "Visita (2)"], probs_ev, p25_ev, [o_h, o_d, o_a]):
+                for nom_m, p_m, p_b, p25_m, c_m in zip(
+                    ["Local (1)", "Empate (X)", "Visita (2)"], probs_ev, probs_bay, p25_ev, [o_h, o_d, o_a]
+                ):
                     res_k = md.calcular_kelly_ev(p_m, p25_m, c_m)
-                    filas_ev[nom_m] = {"Cuota": c_m, "Prob. Efectiva %": round(p_m * 100, 1), **res_k}
+                    ev_bay = round((float(p_b) * float(c_m) - 1.0) * 100.0, 2)
+                    filas_ev[nom_m] = {
+                        "Cuota": c_m,
+                        "Prob. Efectiva %": round(p_m * 100, 1),
+                        "Prob. Bayesiana %": round(p_b * 100, 1),
+                        "EV Bayesiano %": ev_bay,
+                        **res_k,
+                    }
                 st.dataframe(pd.DataFrame(filas_ev).T, use_container_width=True)
 
             st.dataframe(pd.DataFrame({"Probabilidad %": {k: v * 100 for k, v in mk.items()}}).round(1),
@@ -897,6 +924,70 @@ with tab_comb:
                     )
     else:
         st.info("Pulsa **🔎 Buscar partidos del día** arriba o abre **➕ Agregar partidos manualmente** para empezar.")
+
+# --------------------------------- BITÁCORA -----------------------------------
+with tab_bit:
+    st.subheader("📓 Bitácora de Apuestas Reales (Pick Tracker & ROI)")
+    st.caption("Registra tus jugadas de Betano / Betsafe para auditar tu tasa de acierto real, unidades ganadas, "
+               "Yield / ROI y curva de evolución de tu banca.")
+
+    with db.sesion() as con:
+        res_bit = db.resumen_bitacora(con)
+        df_bit = db.listar_apuestas(con)
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Apuestas (Resueltas)", f"{res_bit['resueltas']} / {res_bit['total']}")
+    k2.metric("Acierto %", f"{res_bit['acierto_pct']:.1f}%",
+              f"{res_bit['ganadas']}G - {res_bit['perdidas']}P - {res_bit['nulas']}N")
+    k3.metric("Ganancia Neta", f"{res_bit['ganancia_neta_u']:+.2f} u",
+              f"Apostado: {res_bit['unidades_apostadas']:.1f} u")
+    k4.metric("Yield / ROI Real", f"{res_bit['roi_pct']:+.2f}%")
+
+    with st.expander("➕ Registrar nueva apuesta en la Bitácora", expanded=(res_bit["total"] == 0)):
+        fn_txt = getattr(st, "text_input", lambda *_a, **kw: kw.get("value", ""))
+        bc1, bc2 = st.columns(2)
+        b_comp = bc1.selectbox("Competición", list(LIGAS) + list(COMPETENCIAS_FIFA) + list(TORNEOS_INTERNACIONALES),
+                               index=0, key="bit_comp")
+        b_casa = bc2.selectbox("Casa de apuestas", ["Betano", "Betsafe", "Pinnacle / Otra"], index=0, key="bit_casa")
+        bp1, bp2 = st.columns(2)
+        b_partido = fn_txt("Partido (ej. Universitario vs Alianza Lima)", value=f"{home} vs {away}", key="bit_part")
+        b_sel = fn_txt("Mercado / Selección (ej. Gana Local, Over 2.5)", value=f"Gana {home}", key="bit_sel")
+        bn1, bn2, bn3, bn4 = st.columns(4)
+        b_cuota = bn1.number_input("Cuota tomada", 1.01, 500.0, 1.85, step=0.05, key="bit_cuota")
+        b_prob = bn2.number_input("Prob. Modelo %", 1.0, 99.0, 58.0, step=1.0, key="bit_prob")
+        b_stake = bn3.number_input("Stake (unidades)", 0.1, 100.0, 1.0, step=0.25, key="bit_stake")
+        b_est = bn4.selectbox("Estado inicial", ["Pendiente", "Ganada", "Perdida", "Nula"], index=0, key="bit_est")
+        if st.button("💾 Guardar apuesta en Bitácora", use_container_width=True):
+            if b_partido and b_sel:
+                with db.sesion() as con:
+                    db.registrar_apuesta(
+                        con, date.today().isoformat(), b_comp, b_partido, b_sel,
+                        cuota=b_cuota, prob_modelo=b_prob, stake_unidades=b_stake,
+                        casa=b_casa, estado=b_est,
+                    )
+                st.success("✅ Apuesta registrada en la bitácora.")
+                st.rerun()
+
+    if not df_bit.empty:
+        st.markdown("#### 📋 Historial de Apuestas Registradas")
+        st.dataframe(df_bit, use_container_width=True, hide_index=True)
+
+        u1, u2, u3 = st.columns([2, 2, 1])
+        ids_disp = df_bit["ID"].tolist()
+        id_sel = u1.selectbox("ID de apuesta a actualizar", ids_disp, index=0, key="bit_id_upd")
+        nuevo_est = u2.selectbox("Cambiar estado a", ["Ganada", "Perdida", "Nula", "Pendiente", "🗑️ Eliminar"],
+                                 index=0, key="bit_nuevo_est")
+        if u3.button("✔️ Aplicar", use_container_width=True):
+            with db.sesion() as con:
+                if nuevo_est.startswith("🗑️"):
+                    db.eliminar_apuesta(con, id_sel)
+                else:
+                    db.actualizar_estado_apuesta(con, id_sel, nuevo_est)
+            st.rerun()
+
+        if len(res_bit["curva"]) > 1:
+            st.markdown("#### 📈 Evolución Real de tu Banca (Unidades Netas)")
+            st.line_chart(pd.DataFrame({"Unidades Netas": res_bit["curva"]}))
 
 # --------------------------------- BACKTEST -----------------------------------
 with tab3:

@@ -26,6 +26,19 @@ CREATE TABLE IF NOT EXISTS elo_actual (
 CREATE TABLE IF NOT EXISTS ingestas (
     id INTEGER PRIMARY KEY AUTOINCREMENT, fuente TEXT, detalle TEXT, filas INTEGER, fecha TEXT
 );
+CREATE TABLE IF NOT EXISTS bitacora_apuestas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fecha TEXT NOT NULL,
+    competicion TEXT,
+    partido TEXT NOT NULL,
+    seleccion TEXT NOT NULL,
+    casa TEXT,
+    cuota REAL NOT NULL,
+    prob_modelo REAL,
+    stake_unidades REAL NOT NULL DEFAULT 1.0,
+    estado TEXT NOT NULL DEFAULT 'Pendiente',
+    creado TEXT
+);
 """
 
 COLS = ["id", "tipo", "competicion", "temporada", "fecha", "local", "visita", "goles_l", "goles_v",
@@ -184,3 +197,78 @@ def resumen_por_liga(con):
         "COUNT(xg_l) AS 'Con xG', COUNT(tiros_p_l) AS 'Con tiros a puerta', COUNT(faltas_l) AS 'Con faltas', "
         "COUNT(amarillas_l) AS 'Con tarjetas', COUNT(cuota_l) AS 'Con cuotas' "
         "FROM partidos GROUP BY competicion ORDER BY competicion", con)
+
+
+# ======================= BITÁCORA / PICK TRACKER ==============================
+def registrar_apuesta(con, fecha, competicion, partido, seleccion, cuota, prob_modelo=None,
+                      stake_unidades=1.0, casa="Betano", estado="Pendiente"):
+    ahora = datetime.now().isoformat(timespec="seconds")
+    con.execute(
+        """INSERT INTO bitacora_apuestas
+           (fecha, competicion, partido, seleccion, casa, cuota, prob_modelo, stake_unidades, estado, creado)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (str(fecha), str(competicion or ""), str(partido), str(seleccion), str(casa or ""),
+         float(cuota), _py(prob_modelo), float(stake_unidades), str(estado), ahora),
+    )
+    con.commit()
+
+
+def listar_apuestas(con):
+    return pd.read_sql_query(
+        """SELECT id AS ID, fecha AS Fecha, competicion AS Competición, partido AS Partido,
+                  seleccion AS Selección, casa AS Casa, cuota AS Cuota,
+                  prob_modelo AS 'Prob. Modelo %', stake_unidades AS 'Stake (u)', estado AS Estado
+           FROM bitacora_apuestas ORDER BY id DESC""",
+        con,
+    )
+
+
+def actualizar_estado_apuesta(con, id_apuesta, nuevo_estado):
+    con.execute("UPDATE bitacora_apuestas SET estado=? WHERE id=?", (str(nuevo_estado), int(id_apuesta)))
+    con.commit()
+
+
+def eliminar_apuesta(con, id_apuesta):
+    con.execute("DELETE FROM bitacora_apuestas WHERE id=?", (int(id_apuesta),))
+    con.commit()
+
+
+def resumen_bitacora(con):
+    df = listar_apuestas(con)
+    if df.empty:
+        return {
+            "total": 0, "resueltas": 0, "ganadas": 0, "perdidas": 0, "nulas": 0,
+            "acierto_pct": 0.0, "unidades_apostadas": 0.0, "ganancia_neta_u": 0.0,
+            "roi_pct": 0.0, "curva": [0.0],
+        }
+    res = df[df["Estado"].isin(["Ganada", "Perdida", "Nula"])].iloc[::-1].copy()
+    if res.empty:
+        return {
+            "total": int(len(df)), "resueltas": 0, "ganadas": 0, "perdidas": 0, "nulas": 0,
+            "acierto_pct": 0.0, "unidades_apostadas": 0.0, "ganancia_neta_u": 0.0,
+            "roi_pct": 0.0, "curva": [0.0],
+        }
+    gan = int((res["Estado"] == "Ganada").sum())
+    per = int((res["Estado"] == "Perdida").sum())
+    nul = int((res["Estado"] == "Nula").sum())
+    pl = np.where(
+        res["Estado"] == "Ganada",
+        res["Stake (u)"] * (res["Cuota"] - 1.0),
+        np.where(res["Estado"] == "Perdida", -res["Stake (u)"], 0.0),
+    )
+    u_tot = float(res["Stake (u)"].sum())
+    neta = float(pl.sum())
+    roi = (neta / u_tot * 100.0) if u_tot > 0 else 0.0
+    curva = [0.0] + [round(float(x), 2) for x in np.cumsum(pl)]
+    return {
+        "total": int(len(df)),
+        "resueltas": int(len(res)),
+        "ganadas": gan,
+        "perdidas": per,
+        "nulas": nul,
+        "acierto_pct": round(gan / max(gan + per, 1) * 100.0, 1),
+        "unidades_apostadas": round(u_tot, 2),
+        "ganancia_neta_u": round(neta, 2),
+        "roi_pct": round(roi, 2),
+        "curva": curva,
+    }

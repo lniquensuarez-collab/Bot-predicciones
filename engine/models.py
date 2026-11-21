@@ -6,6 +6,7 @@ import pandas as pd
 from scipy.optimize import minimize
 from scipy.special import gammaln
 from scipy.stats import nbinom, poisson
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -328,8 +329,50 @@ def top_marcadores(M, n=5):
 
 
 # ------------------------ Clasificador y conteos -----------------------------
+class ClasificadorHibrido:
+    """Super-clasificador tabular híbrido (55% Regresión Logística L2 + 45% Gradient Boosting Regularizado).
+    Combina la calibración global lineal de la Regresión Logística con las interacciones no lineales
+    de árboles potenciados por gradiente (estilo LightGBM/XGBoost) sin sobreajustar."""
+
+    def __init__(self, pipe_lr, gbm=None, peso_lr=0.55):
+        self.pipe_lr = pipe_lr
+        self.gbm = gbm
+        self.peso_lr = float(peso_lr)
+        self.classes_ = pipe_lr.classes_
+
+    def predict_proba(self, X):
+        p_lr = self.pipe_lr.predict_proba(X)
+        if self.gbm is None:
+            return p_lr
+        p_gb = self.gbm.predict_proba(X)
+        if p_gb.shape != p_lr.shape:
+            return p_lr
+        p = self.peso_lr * p_lr + (1.0 - self.peso_lr) * p_gb
+        return p / np.clip(p.sum(axis=1, keepdims=True), 1e-12, None)
+
+
 def entrenar_lr(X, y, sample_weight=None):
-    return make_pipeline(StandardScaler(), LogisticRegression(C=0.3, max_iter=1000)).fit(X, y, logisticregression__sample_weight=sample_weight)
+    pipe_lr = make_pipeline(StandardScaler(), LogisticRegression(C=0.3, max_iter=1000)).fit(
+        X, y, logisticregression__sample_weight=sample_weight
+    )
+    gbm = None
+    clases_unicas = np.unique(y)
+    if len(X) >= 120 and len(clases_unicas) == 3:
+        try:
+            gbm = HistGradientBoostingClassifier(
+                max_depth=3,
+                max_iter=55,
+                learning_rate=0.045,
+                l2_regularization=4.0,
+                min_samples_leaf=25,
+                random_state=42,
+            ).fit(X, y, sample_weight=sample_weight)
+            if not np.array_equal(gbm.classes_, pipe_lr.classes_):
+                gbm = None
+        except Exception:
+            gbm = None
+    return ClasificadorHibrido(pipe_lr, gbm=gbm, peso_lr=0.55)
+
 
 def predecir_lr(pipe, X):
     out = np.zeros((len(X), 3))
@@ -464,6 +507,31 @@ def calcular_kelly_ev(prob_media, prob_p25, cuota, fraccion=0.25, max_stake=5.0)
         senal = "❌ Sin valor (EV negativo)"
     return {"EV %": round(ev, 2), "EV conservador %": round(ev_c, 2),
             "Stake Kelly 1/4 %": round(stake, 2), "Señal": senal}
+
+
+def actualizar_prob_bayesiana_mercado(p_modelo, p_mercado, n_h=20, n_a=20, spread_pp=5.0):
+    """Fusión Bayesiana entre la probabilidad del Ensemble y el prior implícito del mercado (desmargenado).
+    Pondera dinámicamente según el tamaño de muestra efectivo de los equipos y el consenso entre submodelos."""
+    p_mod = np.clip(np.asarray(p_modelo, dtype=float), 1e-4, 1.0 - 1e-4)
+    p_mkt = np.clip(np.asarray(p_mercado, dtype=float), 1e-4, 1.0 - 1e-4)
+    if np.any(np.isnan(p_mkt)):
+        return {"p_post": p_mod, "w_modelo": 1.0, "w_mercado": 0.0}
+
+    n_ef = float(min(max(n_h, 1), max(n_a, 1)))
+    f_muestra = n_ef / (n_ef + 12.0)                  # 0.50 con 12 PJ, 0.76 con 38 PJ
+    f_consenso = float(np.clip(1.0 - max(0.0, float(spread_pp) - 3.0) / 28.0, 0.40, 1.0))
+    w_mod = float(np.clip(0.35 + 0.45 * f_muestra * f_consenso, 0.35, 0.75))
+    w_mkt = 1.0 - w_mod
+
+    # Fusión log-lineal (pooling geométrico bayesiano en espacio de probabilidades)
+    log_post = w_mod * np.log(p_mod) + w_mkt * np.log(p_mkt)
+    p_post = np.exp(log_post - np.max(log_post))
+    p_post = p_post / p_post.sum()
+    return {
+        "p_post": p_post,
+        "w_modelo": round(w_mod, 3),
+        "w_mercado": round(w_mkt, 3),
+    }
 
 
 def diagnosticar_consenso(p_dc, p_elo, p_lr, n_h, n_a):

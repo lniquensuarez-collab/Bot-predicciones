@@ -250,6 +250,18 @@ def test_motor():
         filas_f = data_bot._filas_fifa_csv(df_fifa_mock, anios=4)
         assert len(filas_f) == 2 and filas_f[0]["competicion"] == "FIFA" and filas_f[0]["tiros_p_l"] >= 2
 
+        # Nuevas features (Momentum, Dominio Territorial, H2H, Volatilidad), Fusión Bayesiana y Bitácora (Pick Tracker)
+        for col_f in ("elo_mean", "dom_diff", "luck_xg_diff", "volatilidad_goles", "momentum_diff", "h2h_diff"):
+            assert col_f in feats.columns, f"Falta feature {col_f}"
+        bay_res = md.actualizar_prob_bayesiana_mercado([0.55, 0.25, 0.20], [0.48, 0.28, 0.24], n_h=25, n_a=25, spread_pp=4.0)
+        assert abs(bay_res["p_post"].sum() - 1.0) < 1e-6 and 0.48 < bay_res["p_post"][0] < 0.55
+        db.registrar_apuesta(con, "2026-11-20", "PER", "Universitario vs Alianza Lima", "Gana Universitario",
+                             cuota=2.10, prob_modelo=55.0, stake_unidades=2.0, casa="Betano", estado="Ganada")
+        db.registrar_apuesta(con, "2026-11-21", "E0", "Arsenal vs Chelsea", "Over 2.5 goles",
+                             cuota=1.90, prob_modelo=58.0, stake_unidades=1.0, casa="Betsafe", estado="Pendiente")
+        r_bit = db.resumen_bitacora(con)
+        assert r_bit["total"] == 2 and r_bit["resueltas"] == 1 and abs(r_bit["ganancia_neta_u"] - 2.20) < 1e-6
+
         # Modo europeo entre ligas
         df2 = db.cargar_partidos("T2", con)
         f2, est2 = construir_features(df2)
